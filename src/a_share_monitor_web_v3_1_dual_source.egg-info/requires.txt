@@ -1,0 +1,13 @@
+APScheduler<4,>=3.10
+Flask<4,>=3.0
+waitress<4,>=3.0
+alibabacloud_dysmsapi20170525
+alibabacloud_tea_openapi
+alibabacloud_tea_util
+pandas>=2.0
+openpyxl>=3.1
+PyYAML>=6.0
+python-dotenv>=1.0
+requests>=2.31
+akshare>=1.18.63
+tzdata

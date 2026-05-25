@@ -1,0 +1,18 @@
+Metadata-Version: 2.4
+Name: a-share-monitor-web-v3-1-dual-source
+Version: 0.3.1
+Summary: A-share five-minute position-aware monitor using AKShare Sina/EastMoney fallback, with browser dashboard, WeCom and Alibaba Cloud SMS notifications.
+Requires-Python: >=3.10
+Requires-Dist: APScheduler<4,>=3.10
+Requires-Dist: Flask<4,>=3.0
+Requires-Dist: waitress<4,>=3.0
+Requires-Dist: alibabacloud_dysmsapi20170525
+Requires-Dist: alibabacloud_tea_openapi
+Requires-Dist: alibabacloud_tea_util
+Requires-Dist: pandas>=2.0
+Requires-Dist: openpyxl>=3.1
+Requires-Dist: PyYAML>=6.0
+Requires-Dist: python-dotenv>=1.0
+Requires-Dist: requests>=2.31
+Requires-Dist: akshare>=1.18.63
+Requires-Dist: tzdata

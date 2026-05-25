@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ title }} | A股监控</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+<header class="topbar">
+  <div class="container topbar-inner">
+    <a class="brand" href="{{ url_for('dashboard') }}">A股 5 分钟监控</a>
+    <nav>
+      <a href="{{ url_for('dashboard') }}">监控面板</a>
+      {% if auth_enabled %}<a href="{{ url_for('logout') }}">退出</a>{% endif %}
+    </nav>
+  </div>
+</header>
+<main class="container">
+  {% with messages = get_flashed_messages(with_categories=true) %}
+    {% if messages %}
+      <section class="flashes">
+      {% for category, message in messages %}
+        <div class="flash {{ category }}">{{ message }}</div>
+      {% endfor %}
+      </section>
+    {% endif %}
+  {% endwith %}
+  {% block content %}{% endblock %}
+</main>
+<footer class="container footer">规则提醒仅辅助核对交易计划，不自动执行买卖。</footer>
+</body>
+</html>

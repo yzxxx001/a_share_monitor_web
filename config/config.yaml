@@ -1,0 +1,67 @@
+app:
+  name: "A股5分钟仓位监控 Web V3.1（AKShare 双数据源容错版）"
+  timezone: "Asia/Shanghai"
+  schedule_minutes: 5
+  run_delay_seconds: 20
+  only_trading_session: true
+  # 首次使用保持 true：页面可查看提醒预览，但不会真实发送企业微信或短信。
+  dry_run: false
+  log_level: "INFO"
+
+paths:
+  # Excel 用于批量导入；网页新增/编辑后的数据保存到 SQLite。
+  positions_file: "data/positions_template.xlsx"
+  sqlite_file: "state/stock_monitor.db"
+  log_file: "logs/stock_monitor.log"
+
+market:
+  # 免费验证阶段：AKShare 读取公开行情页面，无需 Tushare Token。
+  # 默认优先新浪；新浪失败后自动回退东方财富，减少东财接口断连对监控的影响。
+  provider: "akshare_dual_source"
+  frequency: "5分钟"
+  period: "5"
+  adjust: ""                 # 不复权；用于提醒时避免复权价格与实际成交价混淆
+  cached_bars: 80
+  primary_source: "sina"     # 可选 sina / eastmoney
+  fallback_source: "eastmoney"
+  retry_times: 2              # 每个数据源最多尝试次数
+  retry_backoff_seconds: 0.8
+  bypass_proxy_for_market_hosts: true  # 将行情域名追加到 NO_PROXY；TUN/全局接管仍需代理软件内配置 DIRECT
+
+rules:
+  minimum_bars_for_trend: 20
+  minimum_bars_for_breakout: 21
+  volume_spike_ratio: 1.5
+  alert_cooldown_minutes: 30
+  # 短信默认仅在高风险信号时发送；企业微信记录全部需要通知的信号。
+  sms_levels: ["HIGH"]
+  # 技术指标信号阈值
+  amount_surge_ratio: 3.0       # 成交额放大倍数触发阈值（最新 / 近20根均值）
+  rsi_overbought: 80.0          # RSI 超买提示阈值（仅对有持仓标的触发）
+  intraday_atr_multiplier: 1.0  # 盘中单根K线涨跌幅 ≥ ATR/价格 × N 倍时触发强提醒
+  daily_return_alert_pct: 0.05  # 日内累计涨跌幅阈值（达到此比例 + 量能放大才触发）
+
+notifications:
+  wecom:
+    enabled: true
+    webhook_env: "WECOM_BOT_WEBHOOK"
+    msg_type: "text"      # 企业微信/微信互通群如提示不支持消息类型，请改为 text
+    max_markdown_chars: 4000
+  aliyun_sms:
+    enabled: true
+    access_key_id_env: "ALIBABA_CLOUD_ACCESS_KEY_ID"
+    access_key_secret_env: "ALIBABA_CLOUD_ACCESS_KEY_SECRET"
+    endpoint: "dysmsapi.aliyuncs.com"
+    phone_numbers: ""       # 接收手机号，例如 13800138000
+    sign_name: ""           # 已审核通过的短信签名
+    template_code: ""       # 已审核通过的短信模板 CODE
+    # 建议模板内容：股票${stock}触发${signal}，现价${price}元，请查看企业微信详情。
+
+web:
+  # 仅本机访问使用 127.0.0.1；局域网电脑/手机访问时改为 0.0.0.0。
+  host: "127.0.0.1"
+  port: 8501
+  auto_start_scheduler: true
+  # 设置 MONITOR_WEB_ACCESS_TOKEN 后，网页访问需要输入口令。
+  access_token_env: "MONITOR_WEB_ACCESS_TOKEN"
+  secret_key_env: "MONITOR_WEB_SECRET_KEY"

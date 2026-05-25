@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "a-share-monitor-web-v3-1-dual-source"
+version = "0.3.1"
+description = "A-share five-minute position-aware monitor using AKShare Sina/EastMoney fallback, with browser dashboard, WeCom and Alibaba Cloud SMS notifications."
+requires-python = ">=3.10"
+dependencies = [
+  "APScheduler>=3.10,<4",
+  "Flask>=3.0,<4",
+  "waitress>=3.0,<4",
+  "alibabacloud_dysmsapi20170525",
+  "alibabacloud_tea_openapi",
+  "alibabacloud_tea_util",
+  "pandas>=2.0",
+  "openpyxl>=3.1",
+  "PyYAML>=6.0",
+  "python-dotenv>=1.0",
+  "requests>=2.31",
+  "akshare>=1.18.63",
+  "tzdata",
+]
+
+[project.scripts]
+stock-monitor = "stock_monitor.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+stock_monitor = ["templates/*.html", "static/*.css"]

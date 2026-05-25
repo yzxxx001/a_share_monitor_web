@@ -1,0 +1,194 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="detail-layout">
+
+{# ── 侧边栏：监控标的列表 ── #}
+<aside class="watchlist-sidebar">
+  <div class="sidebar-header">监控标的</div>
+  <nav>
+  {% for w in watchlist %}
+    <a href="{{ url_for('stock_detail', ts_code=w.ts_code) }}"
+       class="{{ 'active' if w.ts_code == position.ts_code else '' }}">
+      <span class="sidebar-name">{{ w.name or w.ts_code }}</span>
+      <span class="sidebar-code">{{ w.ts_code }}{% if not w.enabled %} · 暂停{% endif %}</span>
+    </a>
+  {% else %}
+    <p class="sidebar-empty">暂无标的</p>
+  {% endfor %}
+  </nav>
+</aside>
+
+{# ── 主内容区 ── #}
+<div class="detail-main">
+<section class="hero">
+  <div><h1>{{ position.name or position.ts_code }} <small>{{ position.ts_code }}</small></h1><p class="muted">监控参数、分钟行情与信号历史</p></div>
+  <a class="button-link" href="{{ url_for('dashboard') }}">返回面板</a>
+</section>
+<section class="metrics">
+  <div><span>最新价</span><strong>{{ '%.2f'|format(evaluation.latest_price) if evaluation else '-' }}</strong></div>
+  <div><span>持仓盈亏</span><strong class="{{ 'negative' if evaluation and evaluation.pnl_pct is not none and evaluation.pnl_pct < 0 else 'positive' }}">{{ '%.2f%%'|format(evaluation.pnl_pct * 100) if evaluation and evaluation.pnl_pct is not none else '-' }}</strong></div>
+  <div><span>市值仓位</span><strong>{{ '%.2f%%'|format(evaluation.position_pct * 100) if evaluation else '-' }}</strong></div>
+  <div><span>MA5 / MA20</span><strong>{{ ('%.2f / %.2f'|format(evaluation.ma5, evaluation.ma20)) if evaluation and evaluation.ma20 is not none else '-' }}</strong></div>
+</section>
+{% if evaluation and evaluation.market_state %}
+{% set ms = evaluation.market_state %}
+<section class="panel" style="margin-bottom:18px">
+  <h2 style="margin-bottom:6px">市场状态综合判断
+    {% set _tier_map = {'上升':'sb-up','下降':'sb-down','震荡':''} %}
+    <small class="muted" style="font-size:12px;font-weight:400">基于MA20 / MA60 / MACD / RSI / ATR / 成交额等指标压缩</small>
+  </h2>
+  <div class="state-badges">
+    {# 趋势状态 #}
+    {% set trend_cls = 'sb-up' if ms.trend_state == '上升' else ('sb-down' if ms.trend_state == '下降' else '') %}
+    <div class="state-badge {{ trend_cls }}" title="{{ ms.trend_basis }}">
+      <span>趋势</span><strong>{{ ms.trend_state }}</strong>
+    </div>
+    {# 动量状态 #}
+    {% set mom_cls = 'sb-hot' if ms.momentum_state == '偏热' else ('sb-cold' if ms.momentum_state == '偏冷' else '') %}
+    <div class="state-badge {{ mom_cls }}" title="{{ ms.momentum_basis }}">
+      <span>动量</span><strong>{{ ms.momentum_state }}</strong>
+    </div>
+    {# 波动率状态 #}
+    {% set vol_cls = 'sb-anomaly' if ms.volatility_state == '异常' else ('sb-hot' if ms.volatility_state == '高' else ('sb-cold' if ms.volatility_state == '低' else '')) %}
+    <div class="state-badge {{ vol_cls }}" title="{{ ms.volatility_basis }}">
+      <span>波动率</span><strong>{{ ms.volatility_state }}</strong>
+    </div>
+    {# 量能状态 #}
+    {% set vols_cls = 'sb-extreme' if ms.volume_state == '极端放量' else ('sb-surge' if ms.volume_state == '放量' else ('sb-cold' if ms.volume_state == '缩量' else '')) %}
+    <div class="state-badge {{ vols_cls }}" title="{{ ms.volume_basis }}">
+      <span>量能</span><strong>{{ ms.volume_state }}</strong>
+    </div>
+    {# 相对强弱（有行业数据时显示）#}
+    {% if ms.relative_state %}
+    {% set rel_cls = 'sb-strong' if ms.relative_state == '强于行业' else ('sb-weak' if ms.relative_state == '弱于行业' else '') %}
+    <div class="state-badge {{ rel_cls }}">
+      <span>行业对比</span><strong>{{ ms.relative_state }}</strong>
+    </div>
+    {% endif %}
+    {# 日内涨跌幅（辅助）#}
+    {% if evaluation.indicators and evaluation.indicators.daily_return is not none %}
+    {% set dr = evaluation.indicators.daily_return %}
+    <div class="state-badge {{ 'sb-down' if dr < 0 else 'sb-up' }}" title="今日首根K线open→最新close">
+      <span>日内涨跌</span><strong>{{ '%+.2f%%'|format(dr * 100) }}</strong>
+    </div>
+    {% endif %}
+  </div>
+</section>
+{% endif %}
+{% if evaluation and evaluation.indicators %}
+{% set ind = evaluation.indicators %}
+<section class="panel" style="margin-bottom:18px">
+  <h2>技术指标概览 <small class="muted" style="font-size:13px;font-weight:400">风险参考，不构成买卖建议</small></h2>
+  <div class="ind-grid">
+    <div>
+      <span>RSI(14) 动量</span>
+      <strong class="{{ 'warn-text' if ind.rsi14 is not none and ind.rsi14 > 80 else ('positive' if ind.rsi14 is not none and ind.rsi14 < 30 else '') }}">
+        {{ '%.1f'|format(ind.rsi14) if ind.rsi14 is not none else '-' }}
+      </strong>
+    </div>
+    <div>
+      <span>布林带 %B</span>
+      <strong class="{{ 'negative' if ind.bb_pct is not none and ind.bb_pct < 0 else ('warn-text' if ind.bb_pct is not none and ind.bb_pct > 1 else '') }}">
+        {{ '%.2f'|format(ind.bb_pct) if ind.bb_pct is not none else '-' }}
+        {% if ind.bb_lower is not none and ind.bb_upper is not none %}
+        <small class="muted">{{ '%.2f'|format(ind.bb_lower) }}–{{ '%.2f'|format(ind.bb_upper) }}</small>
+        {% endif %}
+      </strong>
+    </div>
+    <div>
+      <span>MACD 柱（DIF-DEA）</span>
+      <strong class="{{ 'negative' if ind.macd_hist is not none and ind.macd_hist < 0 else 'positive' }}">
+        {{ '%.4f'|format(ind.macd_hist) if ind.macd_hist is not none else '-' }}
+        {% if ind.macd_dif is not none %}<small class="muted">DIF {{ '%.4f'|format(ind.macd_dif) }}</small>{% endif %}
+      </strong>
+    </div>
+    <div>
+      <span>ADX(14) 趋势强度</span>
+      <strong class="{{ 'warn-text' if ind.adx14 is not none and ind.adx14 > 25 else '' }}">
+        {{ '%.1f'|format(ind.adx14) if ind.adx14 is not none else '-' }}
+        {% if ind.adx14 is not none %}<small class="muted">{{ '强趋势' if ind.adx14 > 25 else '弱趋势' }}</small>{% endif %}
+      </strong>
+    </div>
+    <div>
+      <span>成交额倍数</span>
+      <strong class="{{ 'warn-text' if ind.amount_ratio is not none and ind.amount_ratio >= 3 else '' }}">
+        {{ '%.1f×'|format(ind.amount_ratio) if ind.amount_ratio is not none else '-' }}
+        <small class="muted">vs 近20根均值</small>
+      </strong>
+    </div>
+    <div>
+      <span>5分钟涨跌幅</span>
+      <strong class="{{ 'negative' if ind.change_pct is not none and ind.change_pct < 0 else 'positive' }}">
+        {{ '%+.2f%%'|format(ind.change_pct * 100) if ind.change_pct is not none else '-' }}
+      </strong>
+    </div>
+    <div>
+      <span>ATR(14) 波幅</span>
+      <strong>{{ '%.3f'|format(ind.atr14) if ind.atr14 is not none else '-' }}</strong>
+    </div>
+    <div>
+      <span>MA60</span>
+      <strong class="{{ 'positive' if ind.ma60 is not none and evaluation.latest_price >= ind.ma60 else ('negative' if ind.ma60 is not none else '') }}">
+        {{ '%.2f'|format(ind.ma60) if ind.ma60 is not none else '数据积累中' }}
+      </strong>
+    </div>
+  </div>
+</section>
+{% endif %}
+{% if evaluation and evaluation.signals %}
+<section class="panel current-signals">
+  <h2>当前规则判断</h2>
+  <ul>
+  {% for signal in evaluation.signals %}
+    <li><strong>{{ signal.title }}</strong>：{{ signal.reason }} <span class="muted">建议：{{ signal.action }}</span></li>
+  {% endfor %}
+  </ul>
+</section>
+{% endif %}
+<section class="panel chart-panel"><h2>近期 5 分钟收盘价</h2>{{ chart }}</section>
+<section class="two-columns detail-columns">
+  <div class="panel">
+    <h2>仓位与风控参数</h2>
+    <form method="post" class="form-grid">
+      <label class="span-2">股票名称<input name="name" value="{{ position.name }}"></label>
+      <label>持仓股数<input type="number" name="shares" min="0" value="{{ position.shares }}"></label>
+      <label>可卖股数<input type="number" name="available_to_sell" min="0" value="{{ position.available_to_sell }}"></label>
+      <label>持仓成本<input type="number" step="0.001" name="average_cost" min="0" value="{{ position.average_cost }}"></label>
+      <label>账户总资产<input type="number" step="0.01" name="account_total_value" min="0.01" value="{{ position.account_total_value }}"></label>
+      <label>可用现金<input type="number" step="0.01" name="cash_available" min="0" value="{{ position.cash_available }}"></label>
+      <label>最大仓位比例<input type="number" step="0.01" name="max_position_pct" value="{{ position.max_position_pct }}"></label>
+      <label>固定止损比例<input type="number" step="0.01" name="stop_loss_pct" value="{{ position.stop_loss_pct }}"></label>
+      <label>止盈触发比例<input type="number" step="0.01" name="take_profit_pct" value="{{ position.take_profit_pct }}"></label>
+      <label>移动回撤比例<input type="number" step="0.01" name="trailing_stop_pct" value="{{ position.trailing_stop_pct }}"></label>
+      <label>单次新增上限<input type="number" step="0.01" name="max_single_buy_pct" value="{{ position.max_single_buy_pct }}"></label>
+      <label class="span-2">备注<input name="note" value="{{ position.note }}"></label>
+      <label class="checkbox span-2"><input type="checkbox" name="enabled" value="1" {% if position.enabled %}checked{% endif %}> 启用监控</label>
+      <button class="primary span-2" type="submit">保存配置</button>
+    </form>
+    <hr style="margin:1.2rem 0">
+    <h3 style="margin-bottom:.6rem">修改股票代码</h3>
+    <form method="post" action="{{ url_for('rename_stock', ts_code=position.ts_code) }}" class="form-grid"
+          onsubmit="return confirm('确认将股票代码从 {{ position.ts_code }} 改为新代码？历史行情与信号记录也将同步迁移。')">
+      <label class="span-2">新股票代码
+        <input name="new_ts_code" placeholder="如 000001 或 000001.SZ" autocomplete="off" required>
+      </label>
+      <button type="submit" class="span-2">更改代码</button>
+    </form>
+  </div>
+  <div class="panel">
+    <h2>近期信号</h2>
+    <table class="compact"><thead><tr><th>时间</th><th>级别</th><th>信号</th></tr></thead><tbody>
+      {% for event in events %}<tr><td>{{ event.detected_at[5:16] }}</td><td>{{ event.severity }}</td><td>{{ event.title }}<br><small>{{ event.reason }}</small></td></tr>{% else %}<tr><td colspan="3" class="empty">暂无信号</td></tr>{% endfor %}
+    </tbody></table>
+  </div>
+</section>
+<section class="panel wide">
+  <h2>最近分钟行情数据</h2>
+  <div class="table-scroll"><table class="compact"><thead><tr><th>时间</th><th>开</th><th>高</th><th>低</th><th>收</th><th>成交量</th><th>成交额</th></tr></thead><tbody>
+    {% for row in bars %}<tr><td>{{ row.time.strftime('%m-%d %H:%M') }}</td><td>{{ '%.2f'|format(row.open) }}</td><td>{{ '%.2f'|format(row.high) }}</td><td>{{ '%.2f'|format(row.low) }}</td><td>{{ '%.2f'|format(row.close) }}</td><td>{{ '%.0f'|format(row.vol) }}</td><td>{{ '%.0f'|format(row.amount) }}</td></tr>{% else %}<tr><td colspan="7" class="empty">尚未获取行情，请执行一次检查。</td></tr>{% endfor %}
+  </tbody></table></div>
+</section>
+
+</div>{# /detail-main #}
+</div>{# /detail-layout #}
+{% endblock %}

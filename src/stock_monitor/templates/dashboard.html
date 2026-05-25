@@ -1,0 +1,137 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="hero">
+  <div>
+    <h1>监控面板</h1>
+    <p class="muted">行情周期：{{ settings.market.frequency }} ｜ 定时检查：每 {{ settings.app.schedule_minutes }} 分钟 ｜ 数据源：AKShare / 新浪优先，东方财富自动回退</p>
+  </div>
+  <div class="badges">
+    <span class="badge {{ 'warn' if settings.app.dry_run else 'ok' }}">{{ 'DRY RUN 不发送' if settings.app.dry_run else '通知已启用' }}</span>
+    <span class="badge">股票基础库 {{ stock_master_count }} 条</span>
+  </div>
+</section>
+
+<section class="actions-grid">
+  <div class="panel">
+    <h2>添加监控股票</h2>
+    <form method="post" action="{{ url_for('add_watch_item') }}" class="form-grid">
+      <label class="span-2">代码或名称
+        <input name="query" required placeholder="例：600000、600000.SH 或 浦发银行" value="{{ query }}">
+      </label>
+      <label>持仓股数<input type="number" name="shares" min="0" value="0"></label>
+      <label>可卖股数<input type="number" name="available_to_sell" min="0" value="0"></label>
+      <label>持仓成本<input type="number" name="average_cost" step="0.001" min="0" value="0"></label>
+      <label>账户总资产<input type="number" name="account_total_value" step="0.01" min="0.01" value="100000"></label>
+      <details class="span-2 params">
+        <summary>展开风险参数</summary>
+        <div class="form-grid inner">
+          <label>可用现金<input type="number" name="cash_available" step="0.01" min="0" value="0"></label>
+          <label>最大仓位比例<input type="number" name="max_position_pct" step="0.01" value="0.30"></label>
+          <label>固定止损比例<input type="number" name="stop_loss_pct" step="0.01" value="0.05"></label>
+          <label>止盈触发比例<input type="number" name="take_profit_pct" step="0.01" value="0.12"></label>
+          <label>移动回撤比例<input type="number" name="trailing_stop_pct" step="0.01" value="0.04"></label>
+          <label>单次新增上限<input type="number" name="max_single_buy_pct" step="0.01" value="0.10"></label>
+          <label class="span-2">备注<input name="note" placeholder="可选"></label>
+        </div>
+      </details>
+      <input type="hidden" name="enabled" value="1">
+      <button class="primary span-2" type="submit">添加并启用监控</button>
+    </form>
+    {% if query and candidates %}
+      <div class="candidate-list">
+        <h3>搜索结果</h3>
+        {% for item in candidates %}
+        <form method="post" action="{{ url_for('add_watch_item') }}" class="candidate">
+          <input type="hidden" name="selected_ts_code" value="{{ item.ts_code }}">
+          <input type="hidden" name="selected_name" value="{{ item.name }}">
+          <input type="hidden" name="enabled" value="1">
+          <input type="hidden" name="shares" value="0"><input type="hidden" name="available_to_sell" value="0">
+          <input type="hidden" name="average_cost" value="0"><input type="hidden" name="account_total_value" value="100000">
+          <span><strong>{{ item.name }}</strong> {{ item.ts_code }} <small>{{ item.industry }}</small></span>
+          <button type="submit">添加</button>
+        </form>
+        {% endfor %}
+      </div>
+    {% endif %}
+  </div>
+  <div class="panel">
+    <h2>运行与数据准备</h2>
+    <form method="post" action="{{ url_for('run_once') }}" class="row-form">
+      <label><input type="checkbox" name="force_session" value="1"> 忽略交易时段限制</label>
+      <button class="primary" type="submit">立即检查一次</button>
+    </form>
+    <form method="post" action="{{ url_for('sync_master') }}" class="row-form">
+      <p>使用名称添加股票前，先通过 AKShare 同步沪深京 A 股名称库。</p>
+      <button type="submit">同步股票名称库</button>
+    </form>
+    <form method="post" action="{{ url_for('import_excel') }}" class="row-form">
+      <p>将 <code>data/positions_template.xlsx</code> 中启用的行导入监控清单。</p>
+      <button type="submit">导入 Excel 持仓</button>
+    </form>
+    <p class="hint">提示：代码添加可直接使用；名称库与 5 分钟行情均不需要 Tushare Token；分钟行情默认新浪优先、东方财富自动回退，公开接口仍可能因上游限制暂时失效。</p>
+  </div>
+</section>
+
+<section class="panel wide">
+  <div class="section-head"><h2>当前监控标的</h2><span>{{ snapshots|length }} 个</span></div>
+  <div class="table-scroll">
+    <table>
+      <thead><tr><th>标的</th><th>状态</th><th>最新价</th><th>持仓/成本</th><th>盈亏</th><th>市值仓位</th><th>最近数据时间</th><th>信号 / 状态</th><th>操作</th></tr></thead>
+      <tbody>
+      {% for item in snapshots %}
+        {% set p = item.position %}{% set ev = item.evaluation %}{% set ms = item.market_state %}
+        <tr>
+          <td><a href="{{ url_for('stock_detail', ts_code=p.ts_code) }}"><strong>{{ p.name or p.ts_code }}</strong><br><small>{{ p.ts_code }}</small></a></td>
+          <td><span class="status {{ 'enabled' if p.enabled else 'disabled' }}">{{ '监控中' if p.enabled else '已暂停' }}</span></td>
+          <td>{{ '%.2f'|format(ev.latest_price) if ev else '-' }}</td>
+          <td>{{ p.shares }} 股 / {{ '%.3f'|format(p.average_cost) }}</td>
+          <td class="{{ 'negative' if ev and ev.pnl_pct is not none and ev.pnl_pct < 0 else 'positive' }}">{{ '%.2f%%'|format(ev.pnl_pct * 100) if ev and ev.pnl_pct is not none else '-' }}</td>
+          <td>{{ '%.2f%%'|format(ev.position_pct * 100) if ev else '-' }}</td>
+          <td>{{ item.last_time.strftime('%m-%d %H:%M') if item.last_time else '-' }}</td>
+          <td>
+            {{ item.signal_text }}<br>
+            <small class="muted">{{ item.indicator_text | default('') }}</small>
+            {% if ms %}
+            <div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:5px">
+              {% set trend_cls = 'sb-up' if ms.trend_state == '上升' else ('sb-down' if ms.trend_state == '下降' else '') %}
+              <span class="state-badge {{ trend_cls }}" style="min-width:auto;padding:3px 7px" title="{{ ms.trend_basis }}"><span style="font-size:10px">趋势</span><strong style="font-size:12px">{{ ms.trend_state }}</strong></span>
+              {% set mom_cls = 'sb-hot' if ms.momentum_state == '偏热' else ('sb-cold' if ms.momentum_state == '偏冷' else '') %}
+              <span class="state-badge {{ mom_cls }}" style="min-width:auto;padding:3px 7px" title="{{ ms.momentum_basis }}"><span style="font-size:10px">动量</span><strong style="font-size:12px">{{ ms.momentum_state }}</strong></span>
+              {% set vol_cls = 'sb-anomaly' if ms.volatility_state == '异常' else ('sb-hot' if ms.volatility_state == '高' else ('sb-cold' if ms.volatility_state == '低' else '')) %}
+              <span class="state-badge {{ vol_cls }}" style="min-width:auto;padding:3px 7px" title="{{ ms.volatility_basis }}"><span style="font-size:10px">波动</span><strong style="font-size:12px">{{ ms.volatility_state }}</strong></span>
+              {% set vols_cls = 'sb-extreme' if ms.volume_state == '极端放量' else ('sb-surge' if ms.volume_state == '放量' else ('sb-cold' if ms.volume_state == '缩量' else '')) %}
+              <span class="state-badge {{ vols_cls }}" style="min-width:auto;padding:3px 7px" title="{{ ms.volume_basis }}"><span style="font-size:10px">量能</span><strong style="font-size:12px">{{ ms.volume_state }}</strong></span>
+            </div>
+            {% endif %}
+          </td>
+          <td class="buttons">
+            <a class="button-link" href="{{ url_for('stock_detail', ts_code=p.ts_code) }}">详情</a>
+            <form method="post" action="{{ url_for('toggle_stock', ts_code=p.ts_code) }}"><button type="submit">{{ '暂停' if p.enabled else '启用' }}</button></form>
+            <form method="post" action="{{ url_for('delete_stock', ts_code=p.ts_code) }}" onsubmit="return confirm('确认删除该标的？');"><button class="danger" type="submit">删除</button></form>
+          </td>
+        </tr>
+      {% else %}
+        <tr><td class="empty" colspan="9">尚未添加监控标的。可通过代码添加，或导入 Excel 模板。</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section class="two-columns">
+  <div class="panel">
+    <h2>近期触发信号</h2>
+    <table class="compact">
+      <thead><tr><th>时间</th><th>标的</th><th>信号</th><th>通知</th></tr></thead>
+      <tbody>{% for event in events %}<tr><td>{{ event.detected_at[5:16] }}</td><td>{{ event.name or event.ts_code }}</td><td><span class="level {{ event.severity|lower }}">{{ event.title }}</span></td><td>{{ event.channel_status }}</td></tr>{% else %}<tr><td colspan="4" class="empty">暂无触发记录</td></tr>{% endfor %}</tbody>
+    </table>
+  </div>
+  <div class="panel">
+    <h2>近期执行记录</h2>
+    <table class="compact">
+      <thead><tr><th>启动时间</th><th>状态</th><th>结果</th></tr></thead>
+      <tbody>{% for run in runs %}<tr><td>{{ run.started_at[5:16] }}</td><td>{{ run.status }}</td><td>{{ run.message }}</td></tr>{% else %}<tr><td colspan="3" class="empty">尚未执行监控</td></tr>{% endfor %}</tbody>
+    </table>
+  </div>
+</section>
+{% endblock %}
