@@ -46,10 +46,10 @@ class RuleConfig:
     volume_spike_ratio: float
     alert_cooldown_minutes: int
     sms_levels: tuple[str, ...]
-    amount_surge_ratio: float         # 成交额放大倍数触发阈值
-    rsi_overbought: float             # RSI 超买风险提示阈值
-    intraday_atr_multiplier: float    # 盘中单根K线涨跌幅 ≥ ATR/价格×N 时触发强提醒
-    daily_return_alert_pct: float     # 日内累计涨跌幅阈值（触发收盘风险提醒）
+    amount_surge_ratio: float = 3.0         # 成交额放大倍数触发阈值
+    rsi_overbought: float = 80.0            # RSI 超买风险提示阈值
+    intraday_atr_multiplier: float = 1.0    # 盘中单根K线涨跌幅 ≥ ATR/价格×N 时触发强提醒
+    daily_return_alert_pct: float = 0.05    # 日内累计涨跌幅阈值（触发收盘风险提醒）
 
 
 @dataclass(frozen=True)
@@ -87,6 +87,71 @@ class WebConfig:
 
 
 @dataclass(frozen=True)
+class HotSectorScopeConfig:
+    types: tuple[str, ...]
+    top_n_display: int
+    top_n_notify: int
+
+
+@dataclass(frozen=True)
+class HotSectorScheduleConfig:
+    close_report_time: str
+    intraday_scan_enabled: bool
+    intraday_interval_minutes: int
+
+
+@dataclass(frozen=True)
+class HotSectorCandidateConfig:
+    max_count_per_sector: int
+    default_strategy: str
+    available_strategies: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class HotSectorRiskFilterConfig:
+    exclude_st: bool
+    exclude_suspended: bool
+    exclude_delisting_risk: bool
+    exclude_recent_ipo_trading_days: int
+    severe_risk_announcement_days: int
+    sealed_limit_up_as_observe_only: bool
+
+
+@dataclass(frozen=True)
+class HotSectorNotificationConfig:
+    enable_wecom_webhook: bool
+    send_close_summary: bool
+    enable_intraday_sector_alert: bool
+    cooldown_minutes: int
+    prevent_duplicate: bool
+
+
+@dataclass(frozen=True)
+class HotSectorHttpConfig:
+    timeout_seconds: float
+    retry_count: int
+    retry_backoff_seconds: tuple[float, ...]
+
+
+@dataclass(frozen=True)
+class HotSectorCacheConfig:
+    enabled: bool
+    directory: Path
+
+
+@dataclass(frozen=True)
+class HotSectorMonitorConfig:
+    enabled: bool
+    sector_scope: HotSectorScopeConfig
+    schedule: HotSectorScheduleConfig
+    candidate: HotSectorCandidateConfig
+    common_risk_filter: HotSectorRiskFilterConfig
+    notification: HotSectorNotificationConfig
+    http: HotSectorHttpConfig
+    cache: HotSectorCacheConfig
+
+
+@dataclass(frozen=True)
 class Settings:
     project_root: Path
     app: AppConfig
@@ -95,11 +160,22 @@ class Settings:
     rules: RuleConfig
     notifications: NotificationConfig
     web: WebConfig
+    hot_sector_monitor: HotSectorMonitorConfig
 
 
 def _resolve_path(project_root: Path, value: str) -> Path:
     path = Path(value)
     return path if path.is_absolute() else project_root / path
+
+
+def _str_tuple(value: Any, default: list[str]) -> tuple[str, ...]:
+    items = value if isinstance(value, list | tuple) else default
+    return tuple(str(item) for item in items)
+
+
+def _float_tuple(value: Any, default: list[float]) -> tuple[float, ...]:
+    items = value if isinstance(value, list | tuple) else default
+    return tuple(float(item) for item in items)
 
 
 def load_settings(config_file: str | Path) -> Settings:
@@ -116,6 +192,14 @@ def load_settings(config_file: str | Path) -> Settings:
     wecom = notifications.get("wecom", {})
     sms = notifications.get("aliyun_sms", {})
     web = raw.get("web", {})
+    hot_sector = raw.get("hot_sector_monitor", {})
+    sector_scope = hot_sector.get("sector_scope", {})
+    sector_schedule = hot_sector.get("schedule", {})
+    sector_candidate = hot_sector.get("candidate", {})
+    sector_risk = hot_sector.get("common_risk_filter", {})
+    sector_notification = hot_sector.get("notification", {})
+    sector_http = hot_sector.get("http", {})
+    sector_cache = hot_sector.get("cache", {})
 
     return Settings(
         project_root=project_root,
@@ -179,5 +263,50 @@ def load_settings(config_file: str | Path) -> Settings:
             auto_start_scheduler=bool(web.get("auto_start_scheduler", True)),
             access_token_env=str(web.get("access_token_env", "MONITOR_WEB_ACCESS_TOKEN")),
             secret_key_env=str(web.get("secret_key_env", "MONITOR_WEB_SECRET_KEY")),
+        ),
+        hot_sector_monitor=HotSectorMonitorConfig(
+            enabled=bool(hot_sector.get("enabled", True)),
+            sector_scope=HotSectorScopeConfig(
+                types=_str_tuple(sector_scope.get("types"), ["industry"]),
+                top_n_display=int(sector_scope.get("top_n_display", 10)),
+                top_n_notify=int(sector_scope.get("top_n_notify", 3)),
+            ),
+            schedule=HotSectorScheduleConfig(
+                close_report_time=str(sector_schedule.get("close_report_time", "15:10")),
+                intraday_scan_enabled=bool(sector_schedule.get("intraday_scan_enabled", False)),
+                intraday_interval_minutes=int(sector_schedule.get("intraday_interval_minutes", 5)),
+            ),
+            candidate=HotSectorCandidateConfig(
+                max_count_per_sector=int(sector_candidate.get("max_count_per_sector", 10)),
+                default_strategy=str(sector_candidate.get("default_strategy", "short_term_resonance")),
+                available_strategies=_str_tuple(
+                    sector_candidate.get("available_strategies"),
+                    ["short_term_resonance", "medium_term_quality_value"],
+                ),
+            ),
+            common_risk_filter=HotSectorRiskFilterConfig(
+                exclude_st=bool(sector_risk.get("exclude_st", True)),
+                exclude_suspended=bool(sector_risk.get("exclude_suspended", True)),
+                exclude_delisting_risk=bool(sector_risk.get("exclude_delisting_risk", True)),
+                exclude_recent_ipo_trading_days=int(sector_risk.get("exclude_recent_ipo_trading_days", 60)),
+                severe_risk_announcement_days=int(sector_risk.get("severe_risk_announcement_days", 30)),
+                sealed_limit_up_as_observe_only=bool(sector_risk.get("sealed_limit_up_as_observe_only", True)),
+            ),
+            notification=HotSectorNotificationConfig(
+                enable_wecom_webhook=bool(sector_notification.get("enable_wecom_webhook", True)),
+                send_close_summary=bool(sector_notification.get("send_close_summary", True)),
+                enable_intraday_sector_alert=bool(sector_notification.get("enable_intraday_sector_alert", False)),
+                cooldown_minutes=int(sector_notification.get("cooldown_minutes", 30)),
+                prevent_duplicate=bool(sector_notification.get("prevent_duplicate", True)),
+            ),
+            http=HotSectorHttpConfig(
+                timeout_seconds=float(sector_http.get("timeout_seconds", 10)),
+                retry_count=int(sector_http.get("retry_count", 3)),
+                retry_backoff_seconds=_float_tuple(sector_http.get("retry_backoff_seconds"), [1, 3, 8]),
+            ),
+            cache=HotSectorCacheConfig(
+                enabled=bool(sector_cache.get("enabled", True)),
+                directory=_resolve_path(project_root, str(sector_cache.get("directory", "./cache/hot_sector"))),
+            ),
         ),
     )

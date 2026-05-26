@@ -65,3 +65,48 @@ web:
   # 设置 MONITOR_WEB_ACCESS_TOKEN 后，网页访问需要输入口令。
   access_token_env: "MONITOR_WEB_ACCESS_TOKEN"
   secret_key_env: "MONITOR_WEB_SECRET_KEY"
+
+hot_sector_monitor:
+  enabled: true
+
+  sector_scope:
+    types:
+      - industry
+    top_n_display: 10
+    top_n_notify: 3
+
+  schedule:
+    close_report_time: "15:10"
+    intraday_scan_enabled: false
+    intraday_interval_minutes: 5
+
+  candidate:
+    max_count_per_sector: 10
+    default_strategy: "short_term_resonance"
+    available_strategies:
+      - "short_term_resonance"
+      - "medium_term_quality_value"
+
+  common_risk_filter:
+    exclude_st: true
+    exclude_suspended: true
+    exclude_delisting_risk: true
+    exclude_recent_ipo_trading_days: 60
+    severe_risk_announcement_days: 30
+    sealed_limit_up_as_observe_only: true
+
+  notification:
+    enable_wecom_webhook: true
+    send_close_summary: true
+    enable_intraday_sector_alert: false
+    cooldown_minutes: 30
+    prevent_duplicate: true
+
+  http:
+    timeout_seconds: 10
+    retry_count: 3
+    retry_backoff_seconds: [1, 3, 8]
+
+  cache:
+    enabled: true
+    directory: "./cache/hot_sector"

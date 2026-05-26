@@ -93,3 +93,87 @@ class Evaluation:
     signals: list[Signal]
     indicators: IndicatorSnapshot | None = None
     market_state: MarketStateSnapshot | None = None
+
+
+@dataclass(frozen=True)
+class ProviderStatus:
+    provider: str
+    source: str
+    target: str
+    ok: bool
+    is_cached: bool = False
+    is_stale: bool = False
+    cached_at: datetime | None = None
+    requested_at: datetime | None = None
+    retry_count: int = 0
+    error: str | None = None
+    warnings: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class RiskTag:
+    code: str
+    label: str
+    severity: Severity
+    source: str
+    reason: str
+    data_time: datetime | None = None
+
+
+@dataclass(frozen=True)
+class SectorSnapshot:
+    sector_code: str
+    sector_name: str
+    trade_date: str
+    change_pct: float | None
+    turnover: float | None = None
+    amount: float | None = None
+    net_inflow: float | None = None
+    up_count: int | None = None
+    down_count: int | None = None
+    source: str = ""
+    data_time: datetime | None = None
+    provider_status: ProviderStatus | None = None
+    is_complete: bool = True
+    warnings: list[str] = field(default_factory=list)
+    raw: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class SectorScoreResult:
+    sector_code: str
+    sector_name: str
+    score: float
+    components: dict[str, float]
+    data_time: datetime | None = None
+    source: str = ""
+    is_complete: bool = True
+    warnings: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class CandidateStock:
+    ts_code: str
+    name: str
+    sector_code: str
+    sector_name: str
+    score: float
+    score_components: dict[str, float]
+    reasons: list[str]
+    risk_tags: list[RiskTag] = field(default_factory=list)
+    data_time: datetime | None = None
+    source: str = ""
+    is_complete: bool = True
+    warnings: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class ReportMetadata:
+    report_id: str
+    report_type: str
+    trade_date: str
+    generated_at: datetime
+    source: str
+    is_cached: bool = False
+    is_complete: bool = True
+    warnings: list[str] = field(default_factory=list)
