@@ -8,7 +8,15 @@ from dataclasses import dataclass
 import pandas as pd
 
 LOGGER = logging.getLogger(__name__)
-_DATA_HOSTS_NO_PROXY = (".eastmoney.com", ".sina.com.cn")
+_DATA_HOSTS_NO_PROXY = (
+    ".eastmoney.com",
+    ".push2.eastmoney.com",
+    "push2.eastmoney.com",
+    "17.push2.eastmoney.com",
+    ".10jqka.com.cn",
+    "q.10jqka.com.cn",
+    ".sina.com.cn",
+)
 _STANDARD_COLUMNS = ["ts_code", "time", "open", "close", "high", "low", "vol", "amount"]
 
 
@@ -30,7 +38,7 @@ def internal_ts_code(symbol: str) -> str:
     return f"{cleaned}.{exchange}" if exchange else cleaned
 
 
-def _append_no_proxy_hosts() -> None:
+def append_market_no_proxy_hosts() -> None:
     """Append quote hosts to NO_PROXY without discarding the user's existing exceptions."""
     current: list[str] = []
     for key in ("NO_PROXY", "no_proxy"):
@@ -41,6 +49,10 @@ def _append_no_proxy_hosts() -> None:
     value = ",".join(merged)
     os.environ["NO_PROXY"] = value
     os.environ["no_proxy"] = value
+
+
+def _append_no_proxy_hosts() -> None:
+    append_market_no_proxy_hosts()
 
 
 def _short_error(exc: Exception, limit: int = 260) -> str:

@@ -73,6 +73,95 @@
 </section>
 
 <section class="panel wide">
+  <div class="section-head">
+    <h2>当日热门行业板块 Top 10</h2>
+    <form method="post" action="{{ url_for('hot_sector_report') }}" class="inline-actions">
+      <label><input type="checkbox" name="notify" value="1"> 推送 Top 3 摘要</label>
+      <button class="primary" type="submit">生成报告</button>
+    </form>
+  </div>
+  {% if hot_sector_report %}
+    <p class="muted">
+      交易日期：{{ hot_sector_report.trade_date }} ｜ 状态：{{ hot_sector_report.data_status }} ｜ 评分模式：{{ hot_sector_report.score_mode }}
+      {% if hot_sector_report.provider_status and hot_sector_report.provider_status.is_cached %} ｜ 使用缓存{% endif %}
+    </p>
+    <details class="score-rules" open>
+      <summary>评分标准</summary>
+      <p class="hint">排名按综合评分排序，不是按当日涨幅单项排序；高涨幅板块仍可能因成交活跃度、资金流或持续性较弱而排在后面。</p>
+      <ul>
+        {% for key, weight in hot_sector_report.score_weights.items() %}
+          <li>
+            {% if key == 'pct_change' %}当日涨跌幅百分位
+            {% elif key == 'up_stock_ratio' %}上涨覆盖率百分位
+            {% elif key == 'activity' %}成交活跃度百分位
+            {% elif key == 'fund_flow' %}主力净流入占比百分位
+            {% elif key == 'relative_return' %}近5日相对表现百分位
+            {% else %}{{ key }}
+            {% endif %}：{{ '%.0f%%'|format(weight * 100) }}
+          </li>
+        {% endfor %}
+      </ul>
+      <p class="hint">成交活跃度缺失近20日均额时会降级为换手率或当日成交额；近5日相对表现缺失时采用中性分 50，并在数据状态标签中标注。</p>
+    </details>
+    <div class="table-scroll">
+      <table class="compact">
+        <thead><tr><th>排名</th><th>板块</th><th>评分</th><th>涨跌幅</th><th>上涨覆盖</th><th>活跃度</th><th>资金流</th><th>近5日</th><th>数据状态</th></tr></thead>
+        <tbody>
+        {% for item in hot_sector_report.top_sectors[:10] %}
+          <tr>
+            <td>{{ item.rank }}</td>
+            <td><strong>{{ item.sector_name }}</strong><br><small>{{ item.sector_code }}</small></td>
+            <td>{{ '%.2f'|format(item.sector_score) }}</td>
+            <td class="{{ 'positive' if item.pct_change > 0 else 'negative' }}">{{ '%+.2f%%'|format(item.pct_change) }}</td>
+            <td>{{ '%.1f%%'|format(item.up_stock_ratio * 100) if item.up_stock_ratio is not none else '-' }}</td>
+            <td>
+              {% if item.activity_ratio is not none %}
+                {{ '%.2f'|format(item.activity_ratio) }}
+              {% elif item.activity_value is not none %}
+                {{ item.activity_label }} {{ '%.2f'|format(item.activity_value) }}
+              {% elif item.turnover_rate is not none %}
+                换手 {{ '%.2f%%'|format(item.turnover_rate) }}
+              {% else %}
+                -
+              {% endif %}
+            </td>
+            <td>{{ '%.2f%%'|format(item.main_net_inflow_ratio * 100) if item.main_net_inflow_ratio is not none else '-' }}</td>
+            <td>
+              {% if item.relative_return_neutral %}
+                缺失-中性分
+              {% elif item.relative_return_label == '近5日表现替代' %}
+                近5日表现 {{ '%+.2f%%'|format(item.relative_return_vs_benchmark) }}
+              {% elif item.relative_return_vs_benchmark is not none %}
+                {{ '%+.2f%%'|format(item.relative_return_vs_benchmark) }}
+              {% else %}
+                -
+              {% endif %}
+            </td>
+            <td>{{ item.data_tags|join('、') }}</td>
+          </tr>
+        {% else %}
+          <tr>
+            <td colspan="9" class="empty">
+              {% if hot_sector_report.data_status == 'data_unavailable' %}
+                行业板块数据源当前不可用，本次未生成热门行业排名。请检查网络、代理规则或稍后重试。
+              {% else %}
+                今日未识别到满足条件的明显强势行业板块，本次不生成候选观察股清单。
+              {% endif %}
+            </td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% if hot_sector_report.warnings %}
+      <p class="hint">提示：{{ hot_sector_report.warnings[:2]|join('；') }}</p>
+    {% endif %}
+  {% else %}
+    <p class="empty">尚未生成当日热门行业板块报告。收盘后会按配置自动生成，也可以点击“生成报告”。</p>
+  {% endif %}
+</section>
+
+<section class="panel wide">
   <div class="section-head"><h2>当前监控标的</h2><span>{{ snapshots|length }} 个</span></div>
   <div class="table-scroll">
     <table>

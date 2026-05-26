@@ -52,6 +52,9 @@ class CacheStore:
         digest = hashlib.sha256(key.encode("utf-8")).hexdigest()
         return self.directory / f"{digest}.json"
 
+    def exists(self, key: str) -> bool:
+        return self.enabled and self._path(key).exists()
+
     def load(self, key: str) -> tuple[Any, datetime] | None:
         if not self.enabled:
             return None
@@ -93,6 +96,13 @@ class ResilientProvider:
 
     def http_get_json(self, url: str, *, params: dict[str, Any] | None = None, headers: dict[str, str] | None = None) -> Any:
         response = requests.get(url, params=params, headers=headers, timeout=self.http_config.timeout_seconds)
+        response.raise_for_status()
+        return response.json()
+
+    def http_get_json_direct(self, url: str, *, params: dict[str, Any] | None = None, headers: dict[str, str] | None = None) -> Any:
+        session = requests.Session()
+        session.trust_env = False
+        response = session.get(url, params=params, headers=headers, timeout=self.http_config.timeout_seconds)
         response.raise_for_status()
         return response.json()
 

@@ -5,6 +5,7 @@ from pathlib import Path
 import pandas as pd
 import yaml
 
+from stock_monitor.models import ProviderStatus, SectorSnapshot
 from stock_monitor.webapp import create_app
 
 
@@ -24,11 +25,50 @@ class FakeProvider:
         })
 
 
+class FakeHotSectorProvider:
+    def get_industry_sector_rank(self, trade_date: str):
+        status = ProviderStatus(provider="fake", source="mock", target="rank", ok=True)
+        return [
+            SectorSnapshot(
+                sector_code="BK001",
+                sector_name="半导体",
+                trade_date=trade_date,
+                change_pct=2.0,
+                turnover=3.0,
+                provider_status=status,
+                raw={
+                    "pct_change": 2.0,
+                    "up_stock_ratio": 0.8,
+                    "turnover_rate": 3.0,
+                    "main_net_inflow_ratio": 0.03,
+                    "relative_return_vs_benchmark": 1.0,
+                },
+            ),
+            SectorSnapshot(
+                sector_code="BK002",
+                sector_name="软件",
+                trade_date=trade_date,
+                change_pct=1.2,
+                turnover=2.0,
+                provider_status=status,
+                raw={
+                    "pct_change": 1.2,
+                    "up_stock_ratio": 0.7,
+                    "turnover_rate": 2.0,
+                    "main_net_inflow_ratio": 0.01,
+                    "relative_return_vs_benchmark": 0.5,
+                },
+            ),
+        ]
+
+
 def make_config(tmp_path: Path) -> Path:
     source = Path(__file__).parents[1] / "config" / "config.yaml"
     raw = yaml.safe_load(source.read_text(encoding="utf-8"))
     raw["paths"]["sqlite_file"] = str(tmp_path / "monitor.db")
     raw["paths"]["log_file"] = str(tmp_path / "monitor.log")
+    raw["hot_sector_monitor"]["cache"]["directory"] = str(tmp_path / "cache")
+    raw["hot_sector_monitor"]["report"]["directory"] = str(tmp_path / "reports")
     raw["web"]["auto_start_scheduler"] = False
     config = tmp_path / "config.yaml"
     config.write_text(yaml.safe_dump(raw, allow_unicode=True, sort_keys=False), encoding="utf-8")
@@ -57,3 +97,15 @@ def test_add_by_name_run_and_view_api(tmp_path):
     assert "STOP_LOSS" in payload[0]["signals"]
     bars = client.get("/api/stocks/000001.SZ/bars").get_json()
     assert len(bars) == 20
+
+
+def test_dashboard_can_generate_and_show_hot_sector_report(tmp_path):
+    app = create_app(make_config(tmp_path), scheduler_enabled=False)
+    app.config["HOT_SECTOR_PROVIDER"] = FakeHotSectorProvider()
+    client = app.test_client()
+
+    response = client.post("/actions/hot-sector-report", follow_redirects=True)
+
+    assert "已生成热门行业板块报告".encode("utf-8") in response.data
+    assert "半导体".encode("utf-8") in response.data
+    assert list((tmp_path / "reports").glob("*_sector_summary.json"))

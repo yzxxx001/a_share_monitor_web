@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import atexit
 import hmac
+import json
+import logging
 import os
 import re
 import secrets
@@ -12,10 +14,13 @@ from flask import Flask, flash, jsonify, redirect, render_template, request, ses
 from markupsafe import Markup
 
 from .models import Position
+from .providers.hot_sector import AKShareHotSectorProvider
 from .runner import MonitorService, build_service
+from .services.hot_sector_report import HotSectorReportService, normalize_trade_date
 from .signal_engine import evaluate_position
 
 
+LOGGER = logging.getLogger(__name__)
 CODE_PATTERN = re.compile(r"^([0-9]{6})(?:\.(SH|SZ|BJ))?$", re.IGNORECASE)
 
 
@@ -94,6 +99,39 @@ def price_chart_svg(bars) -> Markup:
     )
 
 
+def load_hot_sector_report(service: MonitorService) -> dict[str, object] | None:
+    report_dir = service.settings.hot_sector_monitor.report.directory
+    today = normalize_trade_date("today", service.zone)
+    candidates = [report_dir / f"{today}_sector_summary.json"]
+    if report_dir.exists():
+        candidates.extend(sorted(report_dir.glob("*_sector_summary.json"), key=lambda path: path.stat().st_mtime, reverse=True))
+    for path in candidates:
+        if not path.exists():
+            continue
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            payload["json_path"] = str(path)
+            payload["markdown_path"] = str(report_dir / f"{str(payload.get('trade_date', '') or path.name[:8])}_sector_summary.md")
+            payload["html_path"] = str(report_dir / f"{str(payload.get('trade_date', '') or path.name[:8])}_sector_summary.html")
+            return payload
+        except Exception as exc:
+            LOGGER.warning("读取热门行业板块报告失败：%s；%s", path, exc)
+    return None
+
+
+def build_hot_sector_service(app: Flask, service: MonitorService) -> HotSectorReportService:
+    provider = app.config.get("HOT_SECTOR_PROVIDER")
+    if provider is None:
+        provider = AKShareHotSectorProvider(service.settings.hot_sector_monitor.http, service.settings.hot_sector_monitor.cache)
+    wecom = app.config.get("HOT_SECTOR_WECOM")
+    return HotSectorReportService(service.settings, provider, wecom=wecom)
+
+
+def generate_hot_sector_report(app: Flask, service: MonitorService, trade_date: str, *, notify: bool, force_send: bool = False):
+    report_service = build_hot_sector_service(app, service)
+    return report_service.generate(trade_date, notify=notify, force_send=force_send)
+
+
 def start_scheduler(app: Flask, service: MonitorService) -> None:
     from apscheduler.schedulers.background import BackgroundScheduler
     from apscheduler.triggers.cron import CronTrigger
@@ -105,6 +143,30 @@ def start_scheduler(app: Flask, service: MonitorService) -> None:
         timezone=service.settings.app.timezone,
     )
     scheduler.add_job(service.run_once, trigger=trigger, id="stock_monitor_web", max_instances=1, coalesce=True, replace_existing=True)
+    if service.settings.hot_sector_monitor.enabled:
+        try:
+            hour_text, minute_text = service.settings.hot_sector_monitor.schedule.close_report_time.split(":", maxsplit=1)
+            close_trigger = CronTrigger(
+                hour=int(hour_text),
+                minute=int(minute_text),
+                second=0,
+                timezone=service.settings.app.timezone,
+            )
+            scheduler.add_job(
+                lambda: generate_hot_sector_report(
+                    app,
+                    service,
+                    "today",
+                    notify=service.settings.hot_sector_monitor.notification.send_close_summary,
+                ),
+                trigger=close_trigger,
+                id="hot_sector_close_report",
+                max_instances=1,
+                coalesce=True,
+                replace_existing=True,
+            )
+        except Exception as exc:
+            LOGGER.warning("收盘热门行业板块报告定时任务未启用：%s", exc)
     scheduler.start()
     app.extensions["monitor_scheduler"] = scheduler
     atexit.register(lambda: scheduler.shutdown(wait=False) if scheduler.running else None)
@@ -155,6 +217,7 @@ def create_app(config_path: str | Path, scheduler_enabled: bool | None = None) -
             "dashboard.html", title="监控面板", settings=service.settings, snapshots=service.snapshot(),
             runs=service.store.list_runs(8), events=service.store.list_signal_events(12),
             stock_master_count=service.store.stock_master_count(), query=query, candidates=candidates,
+            hot_sector_report=load_hot_sector_report(service),
             auth_enabled=bool(access_token),
         )
 
@@ -186,6 +249,23 @@ def create_app(config_path: str | Path, scheduler_enabled: bool | None = None) -
         summary = service.run_once(force_session=force_session)
         category = "success" if summary.status == "OK" else "warning"
         flash(summary.message, category)
+        return redirect(url_for("dashboard"))
+
+    @app.post("/actions/hot-sector-report")
+    def hot_sector_report():
+        notify = request.form.get("notify") == "1"
+        force_send = request.form.get("force_send") == "1"
+        try:
+            result = generate_hot_sector_report(app, service, "today", notify=notify, force_send=force_send)
+            message = f"已生成热门行业板块报告：Top {len(result.top_sectors)}，{result.markdown_path.name}"
+            if result.notification:
+                message += f"；企业微信：{result.notification.detail}"
+            if result.notification_skipped_reason:
+                message += f"；{result.notification_skipped_reason}"
+            flash(message, "success")
+        except Exception as exc:
+            LOGGER.exception("生成热门行业板块报告失败。")
+            flash(f"生成热门行业板块报告失败：{exc}", "error")
         return redirect(url_for("dashboard"))
 
     @app.post("/watchlist/add")

@@ -1,17 +1,29 @@
 from __future__ import annotations
 
 import sys
+import os
 from types import SimpleNamespace
 
 import pandas as pd
 
-from stock_monitor.market import AKShareMultiSourceProvider, internal_ts_code
+from stock_monitor.market import AKShareMultiSourceProvider, append_market_no_proxy_hosts, internal_ts_code
 
 
 def test_internal_ts_code_maps_exchanges():
     assert internal_ts_code("600000") == "600000.SH"
     assert internal_ts_code("000001") == "000001.SZ"
     assert internal_ts_code("830799") == "830799.BJ"
+
+
+def test_market_no_proxy_hosts_include_eastmoney_push_host(monkeypatch):
+    monkeypatch.delenv("NO_PROXY", raising=False)
+    monkeypatch.delenv("no_proxy", raising=False)
+
+    append_market_no_proxy_hosts()
+
+    assert "17.push2.eastmoney.com" in os.environ["NO_PROXY"]
+    assert ".eastmoney.com" in os.environ["NO_PROXY"]
+    assert "q.10jqka.com.cn" in os.environ["NO_PROXY"]
 
 
 def test_fetch_latest_bars_prefers_sina(monkeypatch):

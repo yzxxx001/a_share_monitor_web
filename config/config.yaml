@@ -95,6 +95,10 @@ hot_sector_monitor:
     severe_risk_announcement_days: 30
     sealed_limit_up_as_observe_only: true
 
+  sector_filter:
+    min_pct_change: 0.0
+    min_up_stock_ratio: 0.55
+
   notification:
     enable_wecom_webhook: true
     send_close_summary: true
@@ -110,3 +114,6 @@ hot_sector_monitor:
   cache:
     enabled: true
     directory: "./cache/hot_sector"
+
+  report:
+    directory: "./reports/hot_sector"

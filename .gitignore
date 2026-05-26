@@ -8,3 +8,5 @@ state/*.db
 data/~$*.xlsx
 bak/
 ai_context/
+/cache/
+/reports/

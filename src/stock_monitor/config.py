@@ -118,6 +118,12 @@ class HotSectorRiskFilterConfig:
 
 
 @dataclass(frozen=True)
+class HotSectorFilterConfig:
+    min_pct_change: float
+    min_up_stock_ratio: float
+
+
+@dataclass(frozen=True)
 class HotSectorNotificationConfig:
     enable_wecom_webhook: bool
     send_close_summary: bool
@@ -140,15 +146,22 @@ class HotSectorCacheConfig:
 
 
 @dataclass(frozen=True)
+class HotSectorReportConfig:
+    directory: Path
+
+
+@dataclass(frozen=True)
 class HotSectorMonitorConfig:
     enabled: bool
     sector_scope: HotSectorScopeConfig
     schedule: HotSectorScheduleConfig
     candidate: HotSectorCandidateConfig
     common_risk_filter: HotSectorRiskFilterConfig
+    sector_filter: HotSectorFilterConfig
     notification: HotSectorNotificationConfig
     http: HotSectorHttpConfig
     cache: HotSectorCacheConfig
+    report: HotSectorReportConfig
 
 
 @dataclass(frozen=True)
@@ -197,9 +210,11 @@ def load_settings(config_file: str | Path) -> Settings:
     sector_schedule = hot_sector.get("schedule", {})
     sector_candidate = hot_sector.get("candidate", {})
     sector_risk = hot_sector.get("common_risk_filter", {})
+    sector_filter = hot_sector.get("sector_filter", {})
     sector_notification = hot_sector.get("notification", {})
     sector_http = hot_sector.get("http", {})
     sector_cache = hot_sector.get("cache", {})
+    sector_report = hot_sector.get("report", {})
 
     return Settings(
         project_root=project_root,
@@ -292,6 +307,10 @@ def load_settings(config_file: str | Path) -> Settings:
                 severe_risk_announcement_days=int(sector_risk.get("severe_risk_announcement_days", 30)),
                 sealed_limit_up_as_observe_only=bool(sector_risk.get("sealed_limit_up_as_observe_only", True)),
             ),
+            sector_filter=HotSectorFilterConfig(
+                min_pct_change=float(sector_filter.get("min_pct_change", 0.0)),
+                min_up_stock_ratio=float(sector_filter.get("min_up_stock_ratio", 0.55)),
+            ),
             notification=HotSectorNotificationConfig(
                 enable_wecom_webhook=bool(sector_notification.get("enable_wecom_webhook", True)),
                 send_close_summary=bool(sector_notification.get("send_close_summary", True)),
@@ -307,6 +326,9 @@ def load_settings(config_file: str | Path) -> Settings:
             cache=HotSectorCacheConfig(
                 enabled=bool(sector_cache.get("enabled", True)),
                 directory=_resolve_path(project_root, str(sector_cache.get("directory", "./cache/hot_sector"))),
+            ),
+            report=HotSectorReportConfig(
+                directory=_resolve_path(project_root, str(sector_report.get("directory", "./reports/hot_sector"))),
             ),
         ),
     )

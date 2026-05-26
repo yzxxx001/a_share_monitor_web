@@ -46,6 +46,14 @@ def _build_parser() -> argparse.ArgumentParser:
     notify = sub.add_parser("notify-test", help="测试通知通道；受 dry_run 配置保护")
     notify.add_argument("--config", default=DEFAULT_CONFIG)
     notify.add_argument("--channel", choices=["wecom", "sms", "both"], default="both")
+
+    hot_sector = sub.add_parser("hot-sector", help="生成收盘后热门行业板块 Top 10 报告")
+    hot_sector.add_argument("--config", default=DEFAULT_CONFIG)
+    hot_sector.add_argument("--date", default="today", help="交易日期：today、YYYYMMDD 或 YYYY-MM-DD")
+    notify_group = hot_sector.add_mutually_exclusive_group()
+    notify_group.add_argument("--notify", action="store_true", help="推送企业微信 Top 3 摘要")
+    notify_group.add_argument("--no-notify", action="store_true", help="只生成报告，不推送")
+    hot_sector.add_argument("--force-send", action="store_true", help="忽略同日通知去重，用于测试")
     return parser
 
 
@@ -77,6 +85,22 @@ def _notify_test(config_path: str, channel: str) -> int:
             {"stock": "测试标的", "signal": "通道测试", "price": "0.00"}
         )
         LOGGER.info("短信测试：%s", result.detail)
+    return 0
+
+
+def _hot_sector(config_path: str, trade_date: str, notify: bool, force_send: bool) -> int:
+    from .providers.hot_sector import AKShareHotSectorProvider
+    from .services.hot_sector_report import HotSectorReportService
+
+    settings = _load_for_non_market_commands(config_path)
+    provider = AKShareHotSectorProvider(settings.hot_sector_monitor.http, settings.hot_sector_monitor.cache)
+    result = HotSectorReportService(settings, provider).generate(trade_date, notify=notify, force_send=force_send)
+    LOGGER.info("热门行业板块报告 Markdown：%s", result.markdown_path)
+    LOGGER.info("热门行业板块报告 JSON：%s", result.json_path)
+    if result.notification:
+        LOGGER.info("企业微信摘要：%s", result.notification.detail)
+    if result.notification_skipped_reason:
+        LOGGER.info("企业微信摘要未发送：%s", result.notification_skipped_reason)
     return 0
 
 
@@ -131,6 +155,8 @@ def main() -> int:
         return _validate(args.config)
     if args.command == "notify-test":
         return _notify_test(args.config, args.channel)
+    if args.command == "hot-sector":
+        return _hot_sector(args.config, args.date, args.notify, args.force_send)
     service = build_service(args.config)
     if args.command == "import-excel":
         count, warnings = service.import_excel_positions()
