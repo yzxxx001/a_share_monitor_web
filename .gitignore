@@ -7,4 +7,3 @@ logs/*.log
 state/*.db
 data/~$*.xlsx
 bak/
-**/bak/
