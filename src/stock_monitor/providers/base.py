@@ -4,6 +4,7 @@ import hashlib
 import http.client
 import json
 import logging
+import random
 import time
 from dataclasses import dataclass
 from datetime import datetime
@@ -27,6 +28,25 @@ RETRYABLE_EXCEPTIONS = (
     requests.exceptions.ChunkedEncodingError,
     http.client.RemoteDisconnected,
 )
+
+# 模拟真实浏览器请求头，降低触发反爬机制的概率
+_DEFAULT_DIRECT_HEADERS: dict[str, str] = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/124.0.0.0 Safari/537.36"
+    ),
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+    "Accept-Encoding": "gzip, deflate, br",
+    "Connection": "close",
+    "Sec-Ch-Ua": '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
+    "Sec-Ch-Ua-Mobile": "?0",
+    "Sec-Ch-Ua-Platform": '"Windows"',
+    "Sec-Fetch-Dest": "empty",
+    "Sec-Fetch-Mode": "cors",
+    "Sec-Fetch-Site": "same-site",
+}
 
 
 class ProviderCallError(RuntimeError):
@@ -54,6 +74,13 @@ class CacheStore:
 
     def exists(self, key: str) -> bool:
         return self.enabled and self._path(key).exists()
+
+    def delete(self, key: str) -> None:
+        if not self.enabled:
+            return
+        path = self._path(key)
+        if path.exists():
+            path.unlink()
 
     def load(self, key: str) -> tuple[Any, datetime] | None:
         if not self.enabled:
@@ -100,9 +127,10 @@ class ResilientProvider:
         return response.json()
 
     def http_get_json_direct(self, url: str, *, params: dict[str, Any] | None = None, headers: dict[str, str] | None = None) -> Any:
+        merged_headers = {**_DEFAULT_DIRECT_HEADERS, **(headers or {})}
         session = requests.Session()
         session.trust_env = False
-        response = session.get(url, params=params, headers=headers, timeout=self.http_config.timeout_seconds)
+        response = session.get(url, params=params, headers=merged_headers, timeout=self.http_config.timeout_seconds)
         response.raise_for_status()
         return response.json()
 
@@ -155,7 +183,9 @@ class ResilientProvider:
                     self._short_error(exc),
                 )
                 if attempt < attempts:
-                    time.sleep(backoffs[min(attempt - 1, len(backoffs) - 1)] if backoffs else 0)
+                    base_delay = backoffs[min(attempt - 1, len(backoffs) - 1)] if backoffs else 0
+                    jitter = random.uniform(0, max(base_delay * 0.4, 0.5))
+                    time.sleep(base_delay + jitter)
             except Exception as exc:
                 last_error = exc
                 self.logger.exception(

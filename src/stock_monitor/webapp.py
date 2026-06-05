@@ -14,7 +14,8 @@ from flask import Flask, flash, jsonify, redirect, render_template, request, ses
 from markupsafe import Markup
 
 from .models import Position
-from .providers.hot_sector import AKShareHotSectorProvider
+from .providers.hot_sector import AKShareHotSectorProvider, RiskEventProvider
+from .services.hot_sector_candidates import HotSectorCandidateService
 from .runner import MonitorService, build_service
 from .services.hot_sector_report import HotSectorReportService, normalize_trade_date
 from .signal_engine import evaluate_position
@@ -119,6 +120,23 @@ def load_hot_sector_report(service: MonitorService) -> dict[str, object] | None:
     return None
 
 
+def load_hot_sector_candidate_report(service: MonitorService) -> dict[str, object] | None:
+    report_dir = service.settings.hot_sector_monitor.report.directory
+    if not report_dir.exists():
+        return None
+    candidates = sorted(report_dir.glob("*_short_term_resonance.json"), key=lambda path: path.stat().st_mtime, reverse=True)
+    for path in candidates:
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            payload["json_path"] = str(path)
+            payload["markdown_path"] = str(path.with_suffix(".md"))
+            payload["html_path"] = str(path.with_suffix(".html"))
+            return payload
+        except Exception as exc:
+            LOGGER.warning("读取短线热点共振候选报告失败：%s：%s", path, exc)
+    return None
+
+
 def build_hot_sector_service(app: Flask, service: MonitorService) -> HotSectorReportService:
     provider = app.config.get("HOT_SECTOR_PROVIDER")
     if provider is None:
@@ -130,6 +148,36 @@ def build_hot_sector_service(app: Flask, service: MonitorService) -> HotSectorRe
 def generate_hot_sector_report(app: Flask, service: MonitorService, trade_date: str, *, notify: bool, force_send: bool = False):
     report_service = build_hot_sector_service(app, service)
     return report_service.generate(trade_date, notify=notify, force_send=force_send)
+
+
+def build_hot_sector_candidate_service(app: Flask, service: MonitorService) -> HotSectorCandidateService:
+    sector_provider = app.config.get("HOT_SECTOR_PROVIDER")
+    if sector_provider is None:
+        sector_provider = AKShareHotSectorProvider(service.settings.hot_sector_monitor.http, service.settings.hot_sector_monitor.cache)
+    stock_provider = app.config.get("HOT_SECTOR_STOCK_PROVIDER") or sector_provider
+    risk_provider = app.config.get("HOT_SECTOR_RISK_PROVIDER") or RiskEventProvider()
+    wecom = app.config.get("HOT_SECTOR_WECOM")
+    return HotSectorCandidateService(service.settings, sector_provider, stock_provider, risk_provider, wecom=wecom)
+
+
+def generate_hot_sector_candidates(
+    app: Flask,
+    service: MonitorService,
+    trade_date: str,
+    *,
+    sector: str,
+    strategy: str,
+    notify: bool,
+    force_refresh: bool,
+):
+    candidate_service = build_hot_sector_candidate_service(app, service)
+    return candidate_service.generate(
+        trade_date,
+        sector=sector,
+        strategy=strategy,
+        notify=notify,
+        force_refresh=force_refresh,
+    )
 
 
 def start_scheduler(app: Flask, service: MonitorService) -> None:
@@ -218,6 +266,7 @@ def create_app(config_path: str | Path, scheduler_enabled: bool | None = None) -
             runs=service.store.list_runs(8), events=service.store.list_signal_events(12),
             stock_master_count=service.store.stock_master_count(), query=query, candidates=candidates,
             hot_sector_report=load_hot_sector_report(service),
+            hot_sector_candidate_report=load_hot_sector_candidate_report(service),
             auth_enabled=bool(access_token),
         )
 
@@ -266,6 +315,47 @@ def create_app(config_path: str | Path, scheduler_enabled: bool | None = None) -
         except Exception as exc:
             LOGGER.exception("生成热门行业板块报告失败。")
             flash(f"生成热门行业板块报告失败：{exc}", "error")
+        return redirect(url_for("dashboard"))
+
+    @app.post("/actions/hot-sector-candidates")
+    def hot_sector_candidates():
+        sector = (request.form.get("sector_name") or request.form.get("sector_code") or "").strip()
+        strategy = request.form.get("strategy", "short_term_resonance").strip() or "short_term_resonance"
+        notify = request.form.get("notify") == "1"
+        force_refresh = request.form.get("force_refresh") == "1"
+        if not sector:
+            flash("请选择一个热门行业板块后再筛选候选观察股。", "warning")
+            return redirect(url_for("dashboard"))
+        try:
+            result = generate_hot_sector_candidates(
+                app,
+                service,
+                "today",
+                sector=sector,
+                strategy=strategy,
+                notify=notify,
+                force_refresh=force_refresh,
+            )
+            message = f"已生成 {result.sector_name} 短线热点共振候选报告：候选 {len(result.candidates)} 支，{result.html_path.name}"
+            if result.observe_only:
+                message += f"；仅观察 {len(result.observe_only)} 支"
+            if result.excluded:
+                message += f"；排除 {len(result.excluded)} 支"
+            if result.data_status == "data_unavailable":
+                message = (
+                    f"{result.sector_name} 成分股/行情数据源不可用，未能生成正常候选股；"
+                    f"已写入诊断报告：{result.html_path.name}"
+                )
+                if result.warnings:
+                    message += f"；原因：{result.warnings[-1]}"
+                flash(message, "error")
+            elif result.candidates:
+                flash(message, "success")
+            else:
+                flash(message + "；未筛出正常候选股，请查看仅观察/排除与 warnings。", "warning")
+        except Exception as exc:
+            LOGGER.exception("生成短线热点共振候选报告失败。")
+            flash(f"生成短线热点共振候选报告失败：{exc}", "error")
         return redirect(url_for("dashboard"))
 
     @app.post("/watchlist/add")

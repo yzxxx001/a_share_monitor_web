@@ -223,6 +223,39 @@ def test_eastmoney_direct_source_maps_api_fields(tmp_path):
     assert rows[0].provider_status.source == "eastmoney_direct"
 
 
+def test_sector_constituents_falls_back_to_eastmoney_direct_for_bk_code(tmp_path):
+    class DirectConstituentProvider(AKShareHotSectorProvider):
+        def http_get_json_direct(self, url, *, params=None, headers=None):  # noqa: ANN001
+            return {
+                "data": {
+                    "diff": [
+                        {
+                            "f12": "000001",
+                            "f14": "候选A",
+                            "f2": 13.0,
+                            "f3": 3.2,
+                            "f6": 260000000,
+                            "f8": 5.0,
+                            "f15": 13.1,
+                            "f62": 8000000,
+                        }
+                    ]
+                }
+            }
+
+        def _fetch_sector_constituents(self, sector_code: str):  # noqa: ANN001
+            raise requests.exceptions.ConnectionError("akshare disconnected")
+
+    provider = DirectConstituentProvider(http_config(retry_count=1), cache_config(tmp_path))
+    rows = provider.get_sector_constituents("BK1592")
+
+    assert rows[0]["代码"] == "000001"
+    assert rows[0]["名称"] == "候选A"
+    assert rows[0]["涨跌幅"] == 3.2
+    assert rows[0]["成交额"] == 260000000
+    assert rows[0]["_provider_status"].source == "eastmoney_direct"
+
+
 def test_industry_rank_prefers_source_with_same_day_cache(tmp_path):
     class CacheFirstProvider(AKShareHotSectorProvider):
         def __init__(self, *args, **kwargs):  # noqa: ANN002, ANN003

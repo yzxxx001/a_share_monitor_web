@@ -54,6 +54,15 @@ def _build_parser() -> argparse.ArgumentParser:
     notify_group.add_argument("--notify", action="store_true", help="推送企业微信 Top 3 摘要")
     notify_group.add_argument("--no-notify", action="store_true", help="只生成报告，不推送")
     hot_sector.add_argument("--force-send", action="store_true", help="忽略同日通知去重，用于测试")
+    hot_sector_sub = hot_sector.add_subparsers(dest="hot_sector_action")
+    candidates = hot_sector_sub.add_parser("candidates", help="生成热门行业板块内短线候选观察股")
+    candidates.add_argument("--date", default="today", help="交易日期：today、YYYYMMDD 或 YYYY-MM-DD")
+    candidates.add_argument("--sector", required=True, help="板块名称或代码，例如：电网设备")
+    candidates.add_argument("--strategy", default="short_term_resonance", help="候选策略，默认 short_term_resonance")
+    candidate_notify = candidates.add_mutually_exclusive_group()
+    candidate_notify.add_argument("--notify", action="store_true", help="推送候选观察摘要")
+    candidate_notify.add_argument("--no-notify", action="store_true", help="只生成报告，不推送")
+    candidates.add_argument("--force-refresh", action="store_true", help="强制刷新本次板块、成分股与个股缓存")
     return parser
 
 
@@ -101,6 +110,34 @@ def _hot_sector(config_path: str, trade_date: str, notify: bool, force_send: boo
         LOGGER.info("企业微信摘要：%s", result.notification.detail)
     if result.notification_skipped_reason:
         LOGGER.info("企业微信摘要未发送：%s", result.notification_skipped_reason)
+    return 0
+
+
+def _hot_sector_candidates(
+    config_path: str,
+    trade_date: str,
+    sector: str,
+    strategy: str,
+    notify: bool,
+    force_refresh: bool,
+) -> int:
+    from .providers.hot_sector import AKShareHotSectorProvider, RiskEventProvider
+    from .services.hot_sector_candidates import HotSectorCandidateService
+
+    settings = _load_for_non_market_commands(config_path)
+    provider = AKShareHotSectorProvider(settings.hot_sector_monitor.http, settings.hot_sector_monitor.cache)
+    result = HotSectorCandidateService(settings, provider, provider, RiskEventProvider()).generate(
+        trade_date,
+        sector=sector,
+        strategy=strategy,
+        notify=notify,
+        force_refresh=force_refresh,
+    )
+    LOGGER.info("短线热点共振候选报告 Markdown：%s", result.markdown_path)
+    LOGGER.info("短线热点共振候选报告 JSON：%s", result.json_path)
+    LOGGER.info("短线热点共振候选报告 HTML：%s", result.html_path)
+    if result.notification:
+        LOGGER.info("候选摘要推送：%s", result.notification.detail)
     return 0
 
 
@@ -156,6 +193,15 @@ def main() -> int:
     if args.command == "notify-test":
         return _notify_test(args.config, args.channel)
     if args.command == "hot-sector":
+        if getattr(args, "hot_sector_action", None) == "candidates":
+            return _hot_sector_candidates(
+                args.config,
+                args.date,
+                args.sector,
+                args.strategy,
+                args.notify,
+                args.force_refresh,
+            )
         return _hot_sector(args.config, args.date, args.notify, args.force_send)
     service = build_service(args.config)
     if args.command == "import-excel":

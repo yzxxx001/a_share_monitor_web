@@ -157,6 +157,7 @@ class HotSectorMonitorConfig:
     schedule: HotSectorScheduleConfig
     candidate: HotSectorCandidateConfig
     common_risk_filter: HotSectorRiskFilterConfig
+    strategy_configs: dict[str, Any]
     sector_filter: HotSectorFilterConfig
     notification: HotSectorNotificationConfig
     http: HotSectorHttpConfig
@@ -191,6 +192,60 @@ def _float_tuple(value: Any, default: list[float]) -> tuple[float, ...]:
     return tuple(float(item) for item in items)
 
 
+def _default_strategy_configs() -> dict[str, Any]:
+    return {
+        "short_term_resonance": {
+            "display_name": "短线热点共振",
+            "history_days": 130,
+            "max_candidates": 10,
+            "weights": {
+                "relative_strength": 0.20,
+                "amount_expansion": 0.20,
+                "trend_structure": 0.15,
+                "turnover_activity": 0.10,
+                "rsi_atr_risk": 0.10,
+                "fund_flow": 0.10,
+                "risk_control": 0.15,
+            },
+            "degraded_weights_no_fund_flow": {
+                "relative_strength": 0.23,
+                "amount_expansion": 0.22,
+                "trend_structure": 0.17,
+                "turnover_activity": 0.11,
+                "rsi_atr_risk": 0.11,
+                "risk_control": 0.16,
+            },
+            "thresholds": {
+                "relative_return_weak_below": -2.0,
+                "relative_return_sync_low": -1.0,
+                "relative_return_sync_high": 3.0,
+                "relative_return_extreme_above": 7.0,
+                "amount_ratio_active": 1.0,
+                "amount_ratio_strong": 2.0,
+                "amount_ratio_extreme": 4.0,
+                "rsi_oversold": 30.0,
+                "rsi_hot": 70.0,
+                "rsi_extreme_hot": 80.0,
+                "atr_high_percentile": 80.0,
+                "turnover_high_percentile": 85.0,
+                "limit_up_pct": 9.8,
+            },
+            "risk_penalties": {
+                "risk_check_incomplete": 15.0,
+                "announcement_incomplete": 10.0,
+                "abnormal_volatility": 8.0,
+                "lhb": 5.0,
+                "major_reduction": 10.0,
+                "unlock": 10.0,
+                "rsi_extreme_hot": 12.0,
+                "extreme_amount": 8.0,
+                "high_volatility": 8.0,
+                "chasing_risk": 8.0,
+            },
+        }
+    }
+
+
 def load_settings(config_file: str | Path) -> Settings:
     config_path = Path(config_file).resolve()
     project_root = config_path.parent.parent
@@ -210,6 +265,7 @@ def load_settings(config_file: str | Path) -> Settings:
     sector_schedule = hot_sector.get("schedule", {})
     sector_candidate = hot_sector.get("candidate", {})
     sector_risk = hot_sector.get("common_risk_filter", {})
+    strategy_configs = hot_sector.get("strategy_configs") or _default_strategy_configs()
     sector_filter = hot_sector.get("sector_filter", {})
     sector_notification = hot_sector.get("notification", {})
     sector_http = hot_sector.get("http", {})
@@ -307,6 +363,7 @@ def load_settings(config_file: str | Path) -> Settings:
                 severe_risk_announcement_days=int(sector_risk.get("severe_risk_announcement_days", 30)),
                 sealed_limit_up_as_observe_only=bool(sector_risk.get("sealed_limit_up_as_observe_only", True)),
             ),
+            strategy_configs=dict(strategy_configs),
             sector_filter=HotSectorFilterConfig(
                 min_pct_change=float(sector_filter.get("min_pct_change", 0.0)),
                 min_up_stock_ratio=float(sector_filter.get("min_up_stock_ratio", 0.55)),

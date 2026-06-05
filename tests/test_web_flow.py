@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import pandas as pd
@@ -61,6 +62,43 @@ class FakeHotSectorProvider:
             ),
         ]
 
+    def get_sector_constituents(self, sector_code: str):
+        return [{"stock_code": "000001", "stock_name": "候选A"}]
+
+    def get_sector_history(self, sector_code: str, days: int):
+        return []
+
+    def get_stock_snapshot(self, stock_code: str, trade_date: str):
+        return {
+            "stock_code": stock_code,
+            "stock_name": "候选A",
+            "close": 13.0,
+            "high": 13.1,
+            "pct_change": 3.2,
+            "amount": 260.0,
+            "turnover_rate": 5.0,
+            "main_net_inflow": 8.0,
+        }
+
+    def get_daily_bars(self, stock_code: str, days: int):
+        start = datetime(2026, 1, 1)
+        rows = []
+        price = 10.0
+        for index in range(130):
+            price += 0.03 if index % 5 else -0.01
+            rows.append(
+                {
+                    "time": (start + timedelta(days=index)).strftime("%Y-%m-%d"),
+                    "open": price - 0.03,
+                    "high": price + 0.08,
+                    "low": price - 0.08,
+                    "close": price,
+                    "amount": 260.0 if index == 129 else 100.0,
+                    "turnover_rate": 5.0,
+                }
+            )
+        return rows
+
 
 def make_config(tmp_path: Path) -> Path:
     source = Path(__file__).parents[1] / "config" / "config.yaml"
@@ -109,3 +147,23 @@ def test_dashboard_can_generate_and_show_hot_sector_report(tmp_path):
     assert "已生成热门行业板块报告".encode("utf-8") in response.data
     assert "半导体".encode("utf-8") in response.data
     assert list((tmp_path / "reports").glob("*_sector_summary.json"))
+
+
+def test_dashboard_can_generate_candidates_from_hot_sector_row(tmp_path):
+    app = create_app(make_config(tmp_path), scheduler_enabled=False)
+    app.config["HOT_SECTOR_PROVIDER"] = FakeHotSectorProvider()
+    client = app.test_client()
+
+    response = client.post("/actions/hot-sector-report", follow_redirects=True)
+    assert "筛选候选股".encode("utf-8") in response.data
+
+    response = client.post(
+        "/actions/hot-sector-candidates",
+        data={"sector_name": "BK001", "sector_code": "BK001", "strategy": "short_term_resonance"},
+        follow_redirects=True,
+    )
+
+    assert "短线热点共振候选报告".encode("utf-8") in response.data
+    assert "候选A".encode("utf-8") in response.data
+    assert list((tmp_path / "reports").glob("*_short_term_resonance.json"))
+    assert list((tmp_path / "reports").glob("*_short_term_resonance.html"))

@@ -105,7 +105,7 @@
     </details>
     <div class="table-scroll">
       <table class="compact">
-        <thead><tr><th>排名</th><th>板块</th><th>评分</th><th>涨跌幅</th><th>上涨覆盖</th><th>活跃度</th><th>资金流</th><th>近5日</th><th>数据状态</th></tr></thead>
+        <thead><tr><th>排名</th><th>板块</th><th>评分</th><th>涨跌幅</th><th>上涨覆盖</th><th>活跃度</th><th>资金流</th><th>近5日</th><th>数据状态</th><th>操作</th></tr></thead>
         <tbody>
         {% for item in hot_sector_report.top_sectors[:10] %}
           <tr>
@@ -138,10 +138,18 @@
               {% endif %}
             </td>
             <td>{{ item.data_tags|join('、') }}</td>
+            <td class="sector-action-cell">
+              <form method="post" action="{{ url_for('hot_sector_candidates') }}" class="sector-candidate-form">
+                <input type="hidden" name="sector_name" value="{{ item.sector_name }}">
+                <input type="hidden" name="sector_code" value="{{ item.sector_code }}">
+                <input type="hidden" name="strategy" value="short_term_resonance">
+                <button class="button-link compact-action" type="submit">筛选候选股</button>
+              </form>
+            </td>
           </tr>
         {% else %}
           <tr>
-            <td colspan="9" class="empty">
+            <td colspan="10" class="empty">
               {% if hot_sector_report.data_status == 'data_unavailable' %}
                 行业板块数据源当前不可用，本次未生成热门行业排名。请检查网络、代理规则或稍后重试。
               {% else %}
@@ -155,6 +163,55 @@
     </div>
     {% if hot_sector_report.warnings %}
       <p class="hint">提示：{{ hot_sector_report.warnings[:2]|join('；') }}</p>
+    {% endif %}
+    {% if hot_sector_candidate_report %}
+      <div class="candidate-report-summary">
+        <div class="section-head">
+          <h3>最近一次短线热点共振候选</h3>
+          <span class="muted">{{ hot_sector_candidate_report.trade_date }} ｜ {{ hot_sector_candidate_report.sector_name }} ｜ {{ hot_sector_candidate_report.strategy_name }}</span>
+        </div>
+        <div class="candidate-report-meta">
+          <span>候选 {{ hot_sector_candidate_report.candidates|length }} 支</span>
+          <span>仅观察 {{ hot_sector_candidate_report.observe_only|length }} 支</span>
+          <span>排除 {{ hot_sector_candidate_report.excluded|length }} 支</span>
+          <span>状态 {{ hot_sector_candidate_report.data_status }}</span>
+        </div>
+        {% if hot_sector_candidate_report.candidates %}
+          <div class="table-scroll">
+            <table class="compact mini-table">
+              <thead><tr><th>排名</th><th>股票</th><th>评分</th><th>涨跌幅</th><th>相对板块</th><th>成交额倍数</th><th>趋势</th><th>RSI</th><th>风险标签</th></tr></thead>
+              <tbody>
+              {% for stock in hot_sector_candidate_report.candidates[:10] %}
+                <tr>
+                  <td>{{ stock.rank }}</td>
+                  <td><strong>{{ stock.stock_name }}</strong><br><small>{{ stock.stock_code }}</small></td>
+                  <td>{{ '%.2f'|format(stock.short_term_score) }}</td>
+                  <td class="{{ 'positive' if stock.pct_change and stock.pct_change > 0 else 'negative' }}">{{ '%+.2f%%'|format(stock.pct_change) if stock.pct_change is not none else '-' }}</td>
+                  <td>{{ '%+.2f%%'|format(stock.relative_return) if stock.relative_return is not none else '-' }}</td>
+                  <td>{{ '%.2f×'|format(stock.amount_ratio) if stock.amount_ratio is not none else '-' }}</td>
+                  <td>{{ stock.trend_state }}</td>
+                  <td>{{ stock.rsi_state }}</td>
+                  <td>{{ stock.risk_tags|join('、') if stock.risk_tags else '-' }}</td>
+                </tr>
+              {% endfor %}
+              </tbody>
+            </table>
+          </div>
+        {% else %}
+          <p class="empty">最近一次筛选未生成正常候选观察股。</p>
+        {% endif %}
+        {% if hot_sector_candidate_report.warnings %}
+          <div class="candidate-warning-box">
+            <strong>数据提示</strong>
+            <ul>
+              {% for warning in hot_sector_candidate_report.warnings[:4] %}
+                <li>{{ warning }}</li>
+              {% endfor %}
+            </ul>
+          </div>
+        {% endif %}
+        <p class="hint">HTML报告：{{ hot_sector_candidate_report.html_path }} ｜ Markdown：{{ hot_sector_candidate_report.markdown_path }}</p>
+      </div>
     {% endif %}
   {% else %}
     <p class="empty">尚未生成当日热门行业板块报告。收盘后会按配置自动生成，也可以点击“生成报告”。</p>
