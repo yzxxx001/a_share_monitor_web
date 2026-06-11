@@ -34,6 +34,7 @@ class HotSectorReportResult:
     markdown_path: Path
     json_path: Path
     html_path: Path
+    board_type: str = "industry"
     notification: SendResult | None = None
     notification_skipped_reason: str | None = None
 
@@ -45,30 +46,38 @@ class HotSectorReportService:
         self.wecom = wecom or WeComNotifier(settings.notifications.wecom, settings.app.dry_run)
         self.zone = ZoneInfo(settings.app.timezone)
 
-    def generate(self, trade_date: str, *, notify: bool = False, force_send: bool = False) -> HotSectorReportResult:
+    def generate(self, trade_date: str, *, board_type: str = "industry", notify: bool = False, force_send: bool = False, force_refresh: bool = False) -> HotSectorReportResult:
         trade_date = normalize_trade_date(trade_date, self.zone)
+        label = "概念" if board_type == "concept" else "行业"
         generated_at = datetime.now(self.zone)
         warnings: list[str] = []
         provider_failed = False
+        if force_refresh:
+            _clear_rank_cache(self.provider, trade_date, board_type)
         try:
-            snapshots = self.provider.get_industry_sector_rank(trade_date)
+            if board_type == "concept":
+                snapshots = self.provider.get_concept_sector_rank(trade_date)
+            else:
+                snapshots = self.provider.get_industry_sector_rank(trade_date)
             provider_status = _merge_provider_status(snapshots)
         except ProviderCallError as exc:
             provider_failed = True
             snapshots = []
             provider_status = _provider_status_to_dict(exc.status)
             warnings.extend(exc.status.warnings)
-            warnings.append(f"行业板块数据源请求失败：{exc.status.error}")
+            warnings.append(f"{label}板块数据源请求失败：{exc.status.error}")
         if not snapshots:
-            warnings.append("行业板块数据为空，本次报告不包含 Top 板块。")
+            warnings.append(f"{label}板块数据为空，本次报告不包含 Top 板块。")
 
         scored = score_sector_snapshots(snapshots, self.settings, warnings)
         top_sectors = scored[: self.settings.hot_sector_monitor.sector_scope.top_n_display]
         if not top_sectors:
             if provider_failed:
-                warnings.append("行业板块数据不可用，未生成热门行业排名。")
+                warnings.append(f"{label}板块数据不可用，未生成热门{label}排名。")
             else:
                 warnings.append(NO_STRONG_SECTOR_MESSAGE)
+        else:
+            self._enrich_five_day_relative(top_sectors, board_type, warnings)
 
         score_mode = _score_mode_from_warnings(warnings)
         data_status = "complete"
@@ -81,9 +90,10 @@ class HotSectorReportService:
 
         report_dir = self.settings.hot_sector_monitor.report.directory
         report_dir.mkdir(parents=True, exist_ok=True)
-        markdown_path = report_dir / f"{trade_date}_sector_summary.md"
-        json_path = report_dir / f"{trade_date}_sector_summary.json"
-        html_path = report_dir / f"{trade_date}_sector_summary.html"
+        file_stem = "concept_summary" if board_type == "concept" else "sector_summary"
+        markdown_path = report_dir / f"{trade_date}_{file_stem}.md"
+        json_path = report_dir / f"{trade_date}_{file_stem}.json"
+        html_path = report_dir / f"{trade_date}_{file_stem}.html"
 
         result = HotSectorReportResult(
             trade_date=trade_date,
@@ -97,6 +107,7 @@ class HotSectorReportService:
             markdown_path=markdown_path,
             json_path=json_path,
             html_path=html_path,
+            board_type=board_type,
         )
         markdown_path.write_text(build_hot_sector_markdown(result), encoding="utf-8")
         html_path.write_text(build_hot_sector_html(result), encoding="utf-8")
@@ -118,18 +129,19 @@ class HotSectorReportService:
                 markdown_path=result.markdown_path,
                 json_path=result.json_path,
                 html_path=result.html_path,
+                board_type=result.board_type,
                 notification=notification,
                 notification_skipped_reason=skipped_reason,
             )
             json_path.write_text(json.dumps(result_to_json(result), ensure_ascii=False, indent=2, default=str), encoding="utf-8")
 
-        LOGGER.info("热门行业板块报告已生成：%s；Top=%d。", markdown_path, len(top_sectors))
+        LOGGER.info("热门%s板块报告已生成：%s；Top=%d。", label, markdown_path, len(top_sectors))
         return result
 
     def _send_summary(self, result: HotSectorReportResult, force_send: bool) -> tuple[SendResult | None, str | None]:
         if not result.top_sectors:
             return None, "无满足条件的行业板块，未发送摘要"
-        marker = self._notification_marker(result.trade_date)
+        marker = self._notification_marker(result.trade_date, result.board_type)
         if marker.exists() and not force_send and self.settings.hot_sector_monitor.notification.prevent_duplicate:
             return None, "同一交易日收盘热门板块摘要已发送，已拦截重复推送"
         summary = build_hot_sector_wecom_summary(result)
@@ -139,8 +151,70 @@ class HotSectorReportService:
             marker.write_text(datetime.now(self.zone).isoformat(timespec="seconds"), encoding="utf-8")
         return send_result, None
 
-    def _notification_marker(self, trade_date: str) -> Path:
-        return self.settings.hot_sector_monitor.report.directory / ".sent" / f"{trade_date}_hot_sector_close_summary.sent"
+    def _notification_marker(self, trade_date: str, board_type: str = "industry") -> Path:
+        suffix = "concept" if board_type == "concept" else "hot_sector"
+        return self.settings.hot_sector_monitor.report.directory / ".sent" / f"{trade_date}_{suffix}_close_summary.sent"
+
+    def _enrich_five_day_relative(self, top_sectors: list[dict[str, Any]], board_type: str, warnings: list[str]) -> None:
+        """用东方财富板块K线补全展示用的近5日相对表现；东方财富不可达时静默保持中性。
+
+        仅更新展示字段，不重算综合评分（仅对 Top-N 取数，并入评分会扰乱百分位）。
+        """
+        getter = getattr(self.provider, "get_sector_five_day_metrics", None)
+        if not callable(getter):
+            return
+        sectors = [(row.get("sector_name"), row.get("sector_code")) for row in top_sectors if row.get("sector_name")]
+        if not sectors:
+            return
+        try:
+            metrics = getter(sectors, board_type=board_type)
+        except Exception as exc:  # best-effort：任何异常都退回中性降级
+            LOGGER.info("近5日相对表现补全跳过（数据源不可用）：%s", exc)
+            return
+        if not metrics:
+            return
+
+        filled = 0
+        for row in top_sectors:
+            metric = metrics.get(row.get("sector_name"))
+            if not metric:
+                continue
+            relative = metric.get("relative_5d")
+            absolute = metric.get("return_5d")
+            if relative is not None:
+                row["relative_return_vs_benchmark"] = relative
+                row["relative_return_label"] = "近5日相对表现"
+                row["relative_return_neutral"] = False
+            elif absolute is not None:
+                row["relative_return_vs_benchmark"] = absolute
+                row["relative_return_label"] = "近5日表现替代"
+                row["relative_return_neutral"] = False
+            else:
+                continue
+            row["return_5d"] = absolute
+            tags = [t for t in (row.get("data_tags") or []) if not t.startswith("近5日相对缺失") and not t.startswith("相对表现降级")]
+            if row["relative_return_label"] == "近5日表现替代":
+                tags.append("相对表现降级:近5日表现")
+            row["data_tags"] = tags or ["正常"]
+            filled += 1
+
+        if filled:
+            warnings[:] = [w for w in warnings if "近5日相对基准指数超额表现暂不可稳定获取" not in w]
+            warnings.append(f"近5日相对表现已通过东方财富板块K线补全 {filled} 个板块（基准：沪深300，仅用于展示，未并入综合评分）。")
+
+
+def _clear_rank_cache(provider: SectorDataProvider, trade_date: str, board_type: str) -> None:
+    """删除当日板块排名缓存，使本次生成被迫走实时抓取；抓取失败时将明确报错而非回退旧缓存。"""
+    cache = getattr(provider, "cache", None)
+    delete = getattr(cache, "delete", None)
+    if not callable(delete):
+        return
+    if board_type == "concept":
+        sources = getattr(provider, "concept_rank_sources", ("eastmoney_direct", "akshare_eastmoney", "ths_concept"))
+    else:
+        sources = getattr(provider, "industry_rank_sources", ("eastmoney_direct", "akshare_eastmoney", "akshare_ths_summary"))
+    for source in sources:
+        delete(f"{board_type}_sector_rank:{source}:{trade_date}")
 
 
 def normalize_trade_date(value: str, zone: ZoneInfo) -> str:
@@ -160,9 +234,9 @@ def score_sector_snapshots(snapshots: list[SectorSnapshot], settings: Settings, 
     if not any(row["pct_change"] is not None for row in rows):
         warnings.append("行业板块数据缺少涨跌幅字段，无法计算热门板块排名。")
         return []
-    if not any(row["up_stock_ratio"] is not None for row in rows):
-        warnings.append("行业板块数据缺少上涨覆盖率字段，无法应用入选过滤条件。")
-        return []
+    up_ratio_available = any(row["up_stock_ratio"] is not None for row in rows)
+    if not up_ratio_available:
+        warnings.append("板块数据缺少上涨覆盖率字段（如概念资金流源仅有公司家数），已跳过上涨覆盖率过滤，仅按涨跌幅入选。")
 
     if not any(row["main_net_inflow_ratio"] is not None for row in rows):
         fund_flow_available = False
@@ -223,9 +297,13 @@ def score_sector_snapshots(snapshots: list[SectorSnapshot], settings: Settings, 
     min_up_stock_ratio = settings.hot_sector_monitor.sector_filter.min_up_stock_ratio
     scored: list[dict[str, Any]] = []
     for row in rows:
-        if row["pct_change"] is None or row["up_stock_ratio"] is None:
+        if row["pct_change"] is None:
             continue
-        if row["pct_change"] <= min_pct_change or row["up_stock_ratio"] < min_up_stock_ratio:
+        if up_ratio_available and row["up_stock_ratio"] is None:
+            continue
+        if row["pct_change"] <= min_pct_change:
+            continue
+        if up_ratio_available and row["up_stock_ratio"] < min_up_stock_ratio:
             continue
         components = {
             "pct_change": row["pct_change_pctile"],

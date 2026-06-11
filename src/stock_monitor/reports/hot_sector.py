@@ -10,9 +10,14 @@ if TYPE_CHECKING:
 DISCLAIMER = "该结果为候选观察依据，不构成投资建议，不代表推荐买入、立即建仓或保证收益。"
 
 
+def _board_label(result: HotSectorReportResult) -> str:
+    return "概念" if getattr(result, "board_type", "industry") == "concept" else "行业"
+
+
 def build_hot_sector_markdown(result: HotSectorReportResult) -> str:
+    label = _board_label(result)
     lines = [
-        f"# 收盘后热门行业板块 Top {min(10, len(result.top_sectors))} 报告",
+        f"# 收盘后热门{label}板块 Top {min(10, len(result.top_sectors))} 报告",
         "",
         f"- 交易日期：{result.trade_date}",
         f"- 生成时间：{result.generated_at:%Y-%m-%d %H:%M:%S}",
@@ -26,14 +31,14 @@ def build_hot_sector_markdown(result: HotSectorReportResult) -> str:
         "",
         *_score_rule_lines(result),
         "",
-        "## 热门行业板块 Top 10",
+        f"## 热门{label}板块 Top 10",
         "",
     ]
     if not result.top_sectors:
         if result.data_status == "data_unavailable":
-            lines += ["行业板块数据源当前不可用，本次未生成热门行业排名。请检查网络、代理规则或稍后重试。", ""]
+            lines += [f"{label}板块数据源当前不可用，本次未生成热门{label}排名。请检查网络、代理规则或稍后重试。", ""]
         else:
-            lines += ["今日未识别到满足条件的明显强势行业板块，本次不生成候选观察股清单。", ""]
+            lines += [f"今日未识别到满足条件的明显强势{label}板块，本次不生成候选观察股清单。", ""]
     else:
         lines += [
             "| 排名 | 板块名称 | 综合评分 | 当日涨跌幅 | 上涨覆盖率 | 成交活跃度 | 主力净流入占比 | 近5日相对表现 | 风险或数据状态标签 |",
@@ -74,8 +79,9 @@ def build_hot_sector_markdown(result: HotSectorReportResult) -> str:
 
 
 def build_hot_sector_wecom_summary(result: HotSectorReportResult) -> str:
+    label = _board_label(result)
     lines = [
-        "### 收盘热门行业板块摘要",
+        f"### 收盘热门{label}板块摘要",
         f"> 交易日期：{result.trade_date}",
         f"> 评分模式：{result.score_mode}；降级评分：{'是' if result.score_mode != 'full' else '否'}",
         "",
@@ -88,11 +94,12 @@ def build_hot_sector_wecom_summary(result: HotSectorReportResult) -> str:
             f"涨跌幅 {_pct(item.get('pct_change'))}，上涨覆盖 {_pct(item.get('up_stock_ratio'), already_ratio=True)}，"
             f"活跃度 {activity_text}，资金流 {fund_text}"
         )
-    lines += ["", "候选观察说明：仅用于收盘后行业热度观察，不构成投资建议。"]
+    lines += ["", f"候选观察说明：仅用于收盘后{label}热度观察，不构成投资建议。"]
     return "\n".join(lines)
 
 
 def build_hot_sector_html(result: HotSectorReportResult) -> str:
+    label = _board_label(result)
     rows = []
     for item in result.top_sectors:
         rows.append(
@@ -110,9 +117,9 @@ def build_hot_sector_html(result: HotSectorReportResult) -> str:
         )
     if not rows:
         empty_text = (
-            "行业板块数据源当前不可用，本次未生成热门行业排名。请检查网络、代理规则或稍后重试。"
+            f"{label}板块数据源当前不可用，本次未生成热门{label}排名。请检查网络、代理规则或稍后重试。"
             if result.data_status == "data_unavailable"
-            else "今日未识别到满足条件的明显强势行业板块，本次不生成候选观察股清单。"
+            else f"今日未识别到满足条件的明显强势{label}板块，本次不生成候选观察股清单。"
         )
         rows.append(f'<tr><td colspan="9" class="empty">{escape(empty_text)}</td></tr>')
 
@@ -127,7 +134,7 @@ def build_hot_sector_html(result: HotSectorReportResult) -> str:
     cache_text = "是" if result.provider_status.get("is_cached") else "否"
     degraded_text = "是" if result.score_mode != "full" else "否"
     provider = f"{result.provider_status.get('provider', 'unknown')} / {result.provider_status.get('source', 'unknown')}"
-    title = f"收盘后热门行业板块 Top {min(10, len(result.top_sectors))} 报告"
+    title = f"收盘后热门{label}板块 Top {min(10, len(result.top_sectors))} 报告"
     score_rules = "".join(f"<li>{escape(line[2:])}</li>" for line in _score_rule_lines(result))
     return f"""<!doctype html>
 <html lang="zh-CN">
@@ -163,7 +170,7 @@ def build_hot_sector_html(result: HotSectorReportResult) -> str:
     <strong>评分标准</strong>
     <ul>{score_rules}</ul>
   </section>
-  <h2>热门行业板块 Top 10</h2>
+  <h2>热门{escape(label)}板块 Top 10</h2>
   <table>
     <thead><tr><th>排名</th><th>板块名称</th><th>综合评分</th><th>当日涨跌幅</th><th>上涨覆盖率</th><th>成交活跃度</th><th>主力净流入占比</th><th>近5日相对表现</th><th>风险或数据状态标签</th></tr></thead>
     <tbody>{''.join(rows)}</tbody>

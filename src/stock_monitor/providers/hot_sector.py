@@ -35,6 +35,14 @@ class SectorDataProvider(ABC):
     def get_industry_sector_rank(self, trade_date: str) -> list[SectorSnapshot]:
         """获取行业板块当日排名所需数据。"""
 
+    def get_concept_sector_rank(self, trade_date: str) -> list[SectorSnapshot]:
+        """获取概念板块当日排名所需数据。默认未实现，由支持的 provider 覆盖。"""
+        raise NotImplementedError("当前数据源未实现概念板块排名。")
+
+    def get_sector_five_day_metrics(self, sectors: list[tuple[str, str]], board_type: str = "industry") -> dict[str, dict[str, float | None]]:
+        """补全给定板块的近5日板块涨跌与相对基准超额。默认不支持，返回空 dict。"""
+        return {}
+
     @abstractmethod
     def get_sector_constituents(self, sector_code: str) -> list[dict[str, Any]]:
         """获取指定行业板块成分股。"""
@@ -85,19 +93,31 @@ class AKShareHotSectorProvider(ResilientProvider, SectorDataProvider, StockDataP
         "akshare_eastmoney",
         "akshare_ths_summary",
     )
+    concept_rank_sources = (
+        "eastmoney_direct",
+        "akshare_eastmoney",
+        "ths_concept",
+    )
 
     def __init__(self, http_config: HotSectorHttpConfig, cache_config: HotSectorCacheConfig) -> None:
         append_market_no_proxy_hosts()
         super().__init__("akshare_hot_sector", http_config, cache_config)
 
     def get_industry_sector_rank(self, trade_date: str) -> list[SectorSnapshot]:
+        return self._get_sector_rank(trade_date, "industry")
+
+    def get_concept_sector_rank(self, trade_date: str) -> list[SectorSnapshot]:
+        return self._get_sector_rank(trade_date, "concept")
+
+    def _get_sector_rank(self, trade_date: str, board_type: str) -> list[SectorSnapshot]:
+        label = "概念" if board_type == "concept" else "行业"
         errors: list[ProviderStatus] = []
-        for source, fetcher in self._industry_rank_fetchers(trade_date):
+        for source, fetcher in self._rank_fetchers(trade_date, board_type):
             try:
                 result = self.call(
                     source=source,
-                    target=f"industry_sector_rank:{trade_date}",
-                    cache_key=f"industry_sector_rank:{source}:{trade_date}",
+                    target=f"{board_type}_sector_rank:{trade_date}",
+                    cache_key=f"{board_type}_sector_rank:{source}:{trade_date}",
                     fetcher=fetcher,
                 )
                 rows = [self._sector_snapshot(row, trade_date, result.status) for row in self._as_records(result)]
@@ -106,22 +126,22 @@ class AKShareHotSectorProvider(ResilientProvider, SectorDataProvider, StockDataP
                         ProviderStatus(
                             provider=self.provider_name,
                             source=source,
-                            target=f"industry_sector_rank:{trade_date}",
+                            target=f"{board_type}_sector_rank:{trade_date}",
                             ok=False,
                             retry_count=result.status.retry_count,
-                            error="行业板块数据源仅返回名称/代码，缺少涨跌幅或上涨覆盖率等排名字段。",
-                            warnings=["行业板块数据字段不足，不能用于热门板块评分。"],
+                            error=f"{label}板块数据源仅返回名称/代码，缺少涨跌幅或上涨覆盖率等排名字段。",
+                            warnings=[f"{label}板块数据字段不足，不能用于热门板块评分。"],
                         )
                     )
                 if errors:
-                    warning = "主数据源请求失败，已自动切换备用行业板块数据源。"
+                    warning = f"主数据源请求失败，已自动切换备用{label}板块数据源。"
                     rows = [self._append_snapshot_warning(row, warning) for row in rows]
                 if not result.status.is_cached:
-                    self._save_last_successful_rank_source(source)
+                    self._save_last_successful_rank_source(board_type, source)
                 return rows
             except ProviderCallError as exc:
                 errors.append(exc.status)
-        raise ProviderCallError(self._combined_failure_status("industry_sector_rank", trade_date, errors))
+        raise ProviderCallError(self._combined_failure_status(f"{board_type}_sector_rank", trade_date, errors, board_type))
 
     def get_sector_constituents(self, sector_code: str) -> list[dict[str, Any]]:
         fetchers: list[tuple[str, Any]] = []
@@ -233,18 +253,182 @@ class AKShareHotSectorProvider(ResilientProvider, SectorDataProvider, StockDataP
         _reset_requests_sessions()
         return ak.stock_board_industry_summary_ths().to_dict("records")
 
-    def _industry_rank_fetchers(self, trade_date: str) -> list[tuple[str, Any]]:
-        fetchers = {
-            "eastmoney_direct": self._fetch_industry_sector_rank_em_direct,
-            "akshare_eastmoney": self._fetch_industry_sector_rank_em,
-            "akshare_ths_summary": self._fetch_industry_sector_rank_ths_summary,
-        }
-        ordered = list(self.industry_rank_sources)
+    def _fetch_concept_sector_rank_em(self) -> Any:
+        import akshare as ak
+
+        _reset_requests_sessions()
+        return ak.stock_board_concept_name_em().to_dict("records")
+
+    def _fetch_concept_sector_rank_em_direct(self) -> list[dict[str, Any]]:
+        payload = self.http_get_json_direct(
+            "https://push2.eastmoney.com/api/qt/clist/get",
+            params={
+                "pn": 1,
+                "pz": 500,
+                "po": 1,
+                "np": 1,
+                "ut": "bd1d9ddb04089700cf9c27f6f7426281",
+                "fltt": 2,
+                "invt": 2,
+                "fid": "f3",
+                "fs": "m:90 t:3 f:!50",
+                "fields": "f3,f6,f8,f12,f14,f62,f104,f105",
+            },
+            headers={
+                "Referer": "https://quote.eastmoney.com/center/boardlist.html",
+                "Origin": "https://quote.eastmoney.com",
+            },
+        )
+        rows = ((payload or {}).get("data") or {}).get("diff") or []
+        return [self._convert_em_direct_row(row) for row in rows]
+
+    _THS_CONCEPT_MAX_PAGES = 4  # 每页 50 个概念，按涨跌幅降序，4 页≈200 强势概念足够
+
+    def _fetch_concept_sector_rank_ths(self) -> list[dict[str, Any]]:
+        """同花顺「概念资金流」备用源（东方财富不可用时使用），抓取 data.10jqka.com.cn/funds/gnzjl。
+
+        该页按涨跌幅降序，含涨跌幅与资金流（无上涨/下跌家数，评分时按缺覆盖率降级处理）。
+        网络异常向上抛出（call() 按可重试错误处理）；解析为空抛 ValueError（不可重试，交由上层
+        切换下一个数据源），避免把空结果当作成功缓存而拦住其它数据源。
+        """
+        import inspect
+        import py_mini_racer
+        import requests as _req
+        import akshare as _ak
+
+        _mod = inspect.getmodule(_ak.stock_board_industry_name_ths)
+        _js = py_mini_racer.MiniRacer()
+        _js.eval(_mod._get_file_content_ths("ths.js"))
+        v_code = _js.call("v")
+
+        session = _req.Session()
+        session.trust_env = False
+        session.headers.update({
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+            "Cookie": f"v={v_code}",
+            "Referer": "http://data.10jqka.com.cn/funds/gnzjl/",
+        })
+
+        results: list[dict[str, Any]] = []
+        for page in range(1, self._THS_CONCEPT_MAX_PAGES + 1):
+            resp = session.get(
+                f"http://data.10jqka.com.cn/funds/gnzjl/field/tradezdf/order/desc/page/{page}/ajax/1/",
+                timeout=12,
+            )
+            resp.raise_for_status()
+            resp.encoding = resp.apparent_encoding or "gbk"
+            page_rows = self._parse_ths_concept_fund_page(resp.text)
+            if not page_rows:
+                break
+            results.extend(page_rows)
+            if len(page_rows) < 50:
+                break
+            time.sleep(0.3)
+
+        seen: set[str] = set()
+        deduped: list[dict[str, Any]] = []
+        for row in results:
+            name = row["板块名称"]
+            if name in seen:
+                continue
+            seen.add(name)
+            deduped.append(row)
+
+        if not deduped:
+            raise ValueError("同花顺概念资金流页解析为空")
+        self.logger.info("THS concept fund fallback: concepts=%d", len(deduped))
+        return deduped
+
+    @staticmethod
+    def _parse_ths_number(value: Any) -> float | None:
+        if value is None:
+            return None
+        text = str(value).strip().replace(",", "").replace("%", "").replace("亿", "").replace("万", "")
+        if text in ("", "-", "--", "nan", "None"):
+            return None
+        try:
+            return float(text)
+        except ValueError:
+            return None
+
+    @classmethod
+    def _parse_ths_concept_fund_page(cls, html: str) -> list[dict[str, Any]]:
+        """解析同花顺概念资金流页（整页或 AJAX 片段）。
+
+        实测列：序号 / 行业 / 行业指数 / 涨跌幅 / 流入资金(亿) / 流出资金(亿) / 净额(亿) /
+        公司家数 / 领涨股 / 涨跌幅.1(领涨股) / 当前价(元)。按子串匹配列，并排除领涨股的涨跌幅列。
+        """
+        try:
+            from io import StringIO
+            import pandas as _pd
+            tables = _pd.read_html(StringIO(html))
+        except Exception:
+            return []
+        if not tables:
+            return []
+        df = max(tables, key=lambda t: t.shape[0])
+
+        def col(*subs: str, exclude: tuple[str, ...] = ()) -> Any:
+            for sub in subs:
+                for original in df.columns:
+                    name = str(original)
+                    if sub in name and not any(bad in name for bad in exclude):
+                        return original
+            return None
+
+        name_c = col("概念名称", "板块名称", "行业", "概念", "名称", exclude=("指数", "领涨", "领跌"))
+        pct_c = col("涨跌幅", "涨幅", exclude=(".1", "领涨", "领跌", "当前", "5日", "20日"))
+        if name_c is None or pct_c is None:
+            return []
+        net_c = col("净额", "净流入", "净额(亿)")
+        inflow_c = col("流入资金", "流入")
+        outflow_c = col("流出资金", "流出")
+        count_c = col("公司家数", "成分股", "家数", exclude=("上涨", "下跌"))
+
+        results: list[dict[str, Any]] = []
+        for _, row in df.iterrows():
+            name = str(row.get(name_c, "")).strip()
+            if not name or name in ("行业", "概念名称", "板块", "名称", "-", "--", "nan"):
+                continue
+            pct = cls._parse_ths_number(row.get(pct_c))
+            if pct is None:
+                continue
+            record: dict[str, Any] = {"板块名称": name, "板块代码": name, "涨跌幅": pct}
+            if net_c is not None:
+                net = cls._parse_ths_number(row.get(net_c))
+                if net is not None:
+                    record["主力净流入"] = net
+            inflow = cls._parse_ths_number(row.get(inflow_c)) if inflow_c is not None else None
+            outflow = cls._parse_ths_number(row.get(outflow_c)) if outflow_c is not None else None
+            if inflow is not None and outflow is not None:
+                record["总成交额"] = inflow + outflow
+            if count_c is not None:
+                count = cls._parse_ths_number(row.get(count_c))
+                if count is not None:
+                    record["total_stock_count"] = count
+            results.append(record)
+        return results
+
+    def _rank_fetchers(self, trade_date: str, board_type: str) -> list[tuple[str, Any]]:
+        if board_type == "concept":
+            fetchers: dict[str, Any] = {
+                "eastmoney_direct": self._fetch_concept_sector_rank_em_direct,
+                "akshare_eastmoney": self._fetch_concept_sector_rank_em,
+                "ths_concept": self._fetch_concept_sector_rank_ths,
+            }
+            ordered = ["eastmoney_direct", "akshare_eastmoney", "ths_concept"]
+        else:
+            fetchers = {
+                "eastmoney_direct": self._fetch_industry_sector_rank_em_direct,
+                "akshare_eastmoney": self._fetch_industry_sector_rank_em,
+                "akshare_ths_summary": self._fetch_industry_sector_rank_ths_summary,
+            }
+            ordered = list(self.industry_rank_sources)
         preferred: list[str] = []
-        last_success = self._last_successful_rank_source()
-        if last_success:
+        last_success = self._last_successful_rank_source(board_type)
+        if last_success and last_success in fetchers:
             preferred.append(last_success)
-        preferred.extend(source for source in ordered if self.cache.exists(f"industry_sector_rank:{source}:{trade_date}"))
+        preferred.extend(source for source in ordered if self.cache.exists(f"{board_type}_sector_rank:{source}:{trade_date}"))
         ordered = list(dict.fromkeys([*preferred, *ordered]))
         return [(source, fetchers[source]) for source in ordered if source in fetchers]
 
@@ -659,6 +843,113 @@ class AKShareHotSectorProvider(ResilientProvider, SectorDataProvider, StockDataP
             "主力净流入": row.get("f62"),
         }
 
+    # ---- 近5日相对表现补全（仅东方财富可达时生效，用于展示，不并入综合评分）----
+    _FIVE_DAY_BENCHMARK_SECID = "1.000300"  # 沪深300 作为相对基准
+    _FIVE_DAY_KLINE_LIMIT = 6  # 取6个交易日收盘，跨5个交易日间隔
+
+    def get_sector_five_day_metrics(self, sectors: list[tuple[str, str]], board_type: str = "industry") -> dict[str, dict[str, float | None]]:
+        """对 (名称, 代码) 列表补全近5日板块涨跌与相对沪深300超额。
+
+        仅依赖东方财富 push2his 板块K线，best-effort：东方财富不可达时返回空 dict，
+        调用方维持中性降级。
+        """
+        metrics: dict[str, dict[str, float | None]] = {}
+        if not sectors:
+            return metrics
+        try:
+            code_map = self._resolve_board_codes(sectors, board_type)
+        except Exception as exc:
+            self.logger.info("近5日补全：板块代码解析失败，跳过：%s", self._short_error(exc))
+            return metrics
+        if not code_map:
+            return metrics
+        try:
+            benchmark = self._fetch_five_day_return(self._FIVE_DAY_BENCHMARK_SECID)
+        except Exception:
+            benchmark = None
+        for name, _code in sectors:
+            bk = code_map.get(name)
+            if not bk:
+                continue
+            try:
+                board_ret = self._fetch_five_day_return(f"90.{bk}")
+            except Exception:
+                board_ret = None
+            if board_ret is None:
+                continue
+            relative = None if benchmark is None else round(board_ret - benchmark, 2)
+            metrics[name] = {"return_5d": round(board_ret, 2), "relative_5d": relative}
+        return metrics
+
+    def _resolve_board_codes(self, sectors: list[tuple[str, str]], board_type: str) -> dict[str, str]:
+        """把板块名映射到东方财富 BK 代码。已是 BK 代码的直接用；否则查一次东财板块名表并模糊匹配。"""
+        resolved: dict[str, str] = {}
+        need_lookup: list[str] = []
+        for name, code in sectors:
+            token = str(code or "").strip().upper()
+            if token.startswith("BK"):
+                resolved[name] = token
+            elif name:
+                need_lookup.append(name)
+        if need_lookup:
+            name_to_code = self._fetch_board_name_code_map(board_type)
+            for name in need_lookup:
+                bk = name_to_code.get(name) or self._match_ths_sector(name, name_to_code)
+                if bk:
+                    resolved[name] = bk
+        return resolved
+
+    def _fetch_board_name_code_map(self, board_type: str) -> dict[str, str]:
+        fs = "m:90 t:3 f:!50" if board_type == "concept" else "m:90 t:2 f:!50"
+        payload = self.http_get_json_direct(
+            "https://push2.eastmoney.com/api/qt/clist/get",
+            params={
+                "pn": 1, "pz": 500, "po": 1, "np": 1,
+                "ut": "bd1d9ddb04089700cf9c27f6f7426281",
+                "fltt": 2, "invt": 2, "fid": "f3",
+                "fs": fs, "fields": "f12,f14",
+            },
+            headers={
+                "Referer": "https://quote.eastmoney.com/center/boardlist.html",
+                "Origin": "https://quote.eastmoney.com",
+            },
+        )
+        rows = ((payload or {}).get("data") or {}).get("diff") or []
+        mapping: dict[str, str] = {}
+        for row in rows:
+            name = str(row.get("f14") or "").strip()
+            code = str(row.get("f12") or "").strip().upper()
+            if name and code:
+                mapping[name] = code
+        return mapping
+
+    def _fetch_five_day_return(self, secid: str) -> float | None:
+        """取 secid 最近 N 个交易日收盘，返回近5日累计涨跌幅（百分比）。"""
+        payload = self.http_get_json_direct(
+            "http://push2his.eastmoney.com/api/qt/stock/kline/get",
+            params={
+                "secid": secid,
+                "fields1": "f1,f2,f3,f4,f5,f6",
+                "fields2": "f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61",
+                "klt": "101", "fqt": "1", "end": "20500101",
+                "lmt": self._FIVE_DAY_KLINE_LIMIT,
+            },
+            headers={"Referer": "https://quote.eastmoney.com/"},
+        )
+        klines = ((payload or {}).get("data") or {}).get("klines") or []
+        closes: list[float] = []
+        for line in klines:
+            parts = str(line).split(",")
+            if len(parts) < 3:
+                continue
+            try:
+                closes.append(float(parts[2]))
+            except ValueError:
+                continue
+        if len(closes) < 2 or closes[0] == 0:
+            return None
+        return (closes[-1] / closes[0] - 1) * 100
+
     def _sector_snapshot(self, row: dict[str, Any], trade_date: str, status: ProviderStatus) -> SectorSnapshot:
         code = self._first_text(row, "板块代码", "代码", "sector_code", "code", default=self._first_text(row, "板块", "板块名称", "名称", "行业", "name"))
         name = self._first_text(row, "板块", "板块名称", "名称", "行业", "sector_name", "name", default=code)
@@ -690,26 +981,28 @@ class AKShareHotSectorProvider(ResilientProvider, SectorDataProvider, StockDataP
     def _has_rank_fields(rows: list[SectorSnapshot]) -> bool:
         return any(snapshot.change_pct is not None for snapshot in rows)
 
-    def _combined_failure_status(self, target: str, trade_date: str, errors: list[ProviderStatus]) -> ProviderStatus:
+    def _combined_failure_status(self, target: str, trade_date: str, errors: list[ProviderStatus], board_type: str = "industry") -> ProviderStatus:
+        label = "概念" if board_type == "concept" else "行业"
         details = "；".join(f"{item.source}: {item.error}" for item in errors if item.error)
         warnings = [warning for item in errors for warning in item.warnings]
+        attempted_sources = [item.source for item in errors if item.source] or list(self.industry_rank_sources)
         return ProviderStatus(
             provider=self.provider_name,
-            source="+".join(self.industry_rank_sources),
+            source="+".join(dict.fromkeys(attempted_sources)),
             target=f"{target}:{trade_date}",
             ok=False,
             retry_count=sum(item.retry_count for item in errors),
-            error=f"所有行业板块数据源均不可用：{details or 'unknown error'}",
-            warnings=list(dict.fromkeys([*warnings, "所有行业板块数据源均不可用，且无可用缓存。"])),
+            error=f"所有{label}板块数据源均不可用：{details or 'unknown error'}",
+            warnings=list(dict.fromkeys([*warnings, f"所有{label}板块数据源均不可用，且无可用缓存。"])),
         )
 
-    def _source_health_path(self) -> Path:
-        return self.cache.directory / "_source_health_industry_rank.json"
+    def _source_health_path(self, board_type: str = "industry") -> Path:
+        return self.cache.directory / f"_source_health_{board_type}_rank.json"
 
-    def _last_successful_rank_source(self) -> str | None:
+    def _last_successful_rank_source(self, board_type: str = "industry") -> str | None:
         if not self.cache.enabled:
             return None
-        path = self._source_health_path()
+        path = self._source_health_path(board_type)
         if not path.exists():
             return None
         try:
@@ -717,13 +1010,13 @@ class AKShareHotSectorProvider(ResilientProvider, SectorDataProvider, StockDataP
         except (OSError, json.JSONDecodeError):
             return None
         source = str(payload.get("source") or "")
-        return source if source in self.industry_rank_sources else None
+        return source or None
 
-    def _save_last_successful_rank_source(self, source: str) -> None:
+    def _save_last_successful_rank_source(self, board_type: str, source: str) -> None:
         if not self.cache.enabled:
             return
         try:
-            self._source_health_path().write_text(
+            self._source_health_path(board_type).write_text(
                 json.dumps({"source": source, "saved_at": datetime.now().isoformat(timespec="seconds")}, ensure_ascii=False, indent=2),
                 encoding="utf-8",
             )

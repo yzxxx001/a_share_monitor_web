@@ -103,13 +103,23 @@ def _hot_sector(config_path: str, trade_date: str, notify: bool, force_send: boo
 
     settings = _load_for_non_market_commands(config_path)
     provider = AKShareHotSectorProvider(settings.hot_sector_monitor.http, settings.hot_sector_monitor.cache)
-    result = HotSectorReportService(settings, provider).generate(trade_date, notify=notify, force_send=force_send)
-    LOGGER.info("热门行业板块报告 Markdown：%s", result.markdown_path)
-    LOGGER.info("热门行业板块报告 JSON：%s", result.json_path)
-    if result.notification:
-        LOGGER.info("企业微信摘要：%s", result.notification.detail)
-    if result.notification_skipped_reason:
-        LOGGER.info("企业微信摘要未发送：%s", result.notification_skipped_reason)
+    service = HotSectorReportService(settings, provider)
+    scope_types = settings.hot_sector_monitor.sector_scope.types
+    if "industry" in scope_types or not scope_types:
+        result = service.generate(trade_date, notify=notify, force_send=force_send)
+        LOGGER.info("热门行业板块报告 Markdown：%s", result.markdown_path)
+        LOGGER.info("热门行业板块报告 JSON：%s", result.json_path)
+        if result.notification:
+            LOGGER.info("企业微信摘要：%s", result.notification.detail)
+        if result.notification_skipped_reason:
+            LOGGER.info("企业微信摘要未发送：%s", result.notification_skipped_reason)
+    if "concept" in scope_types:
+        try:
+            concept = service.generate(trade_date, board_type="concept", notify=False)
+            LOGGER.info("热门概念板块榜单 Markdown：%s", concept.markdown_path)
+            LOGGER.info("热门概念板块榜单 JSON：%s", concept.json_path)
+        except Exception as exc:
+            LOGGER.warning("生成热门概念板块榜单失败：%s", exc)
     return 0
 
 

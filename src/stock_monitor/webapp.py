@@ -100,41 +100,58 @@ def price_chart_svg(bars) -> Markup:
     )
 
 
-def load_hot_sector_report(service: MonitorService) -> dict[str, object] | None:
+def _load_sector_summary(service: MonitorService, file_stem: str, label: str) -> dict[str, object] | None:
     report_dir = service.settings.hot_sector_monitor.report.directory
     today = normalize_trade_date("today", service.zone)
-    candidates = [report_dir / f"{today}_sector_summary.json"]
+    candidates = [report_dir / f"{today}_{file_stem}.json"]
     if report_dir.exists():
-        candidates.extend(sorted(report_dir.glob("*_sector_summary.json"), key=lambda path: path.stat().st_mtime, reverse=True))
+        candidates.extend(sorted(report_dir.glob(f"*_{file_stem}.json"), key=lambda path: path.stat().st_mtime, reverse=True))
     for path in candidates:
         if not path.exists():
             continue
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))
+            stem = str(payload.get("trade_date", "") or path.name[:8])
             payload["json_path"] = str(path)
-            payload["markdown_path"] = str(report_dir / f"{str(payload.get('trade_date', '') or path.name[:8])}_sector_summary.md")
-            payload["html_path"] = str(report_dir / f"{str(payload.get('trade_date', '') or path.name[:8])}_sector_summary.html")
+            payload["markdown_path"] = str(report_dir / f"{stem}_{file_stem}.md")
+            payload["html_path"] = str(report_dir / f"{stem}_{file_stem}.html")
             return payload
         except Exception as exc:
-            LOGGER.warning("读取热门行业板块报告失败：%s；%s", path, exc)
+            LOGGER.warning("读取热门%s板块报告失败：%s；%s", label, path, exc)
     return None
 
 
-def load_hot_sector_candidate_report(service: MonitorService) -> dict[str, object] | None:
+def load_hot_sector_report(service: MonitorService) -> dict[str, object] | None:
+    return _load_sector_summary(service, "sector_summary", "行业")
+
+
+def load_hot_sector_concept_report(service: MonitorService) -> dict[str, object] | None:
+    return _load_sector_summary(service, "concept_summary", "概念")
+
+
+def load_hot_sector_candidate_reports(service: MonitorService) -> list[dict[str, object]]:
+    """加载当日各板块的候选观察股报告，每个板块一条，按最近筛选时间倒序。
+
+    每次筛选会按 `{日期}_{板块}_{strategy}` 落盘，同板块重筛原地覆盖，因此当日文件天然是一板块一份。
+    """
     report_dir = service.settings.hot_sector_monitor.report.directory
     if not report_dir.exists():
-        return None
-    candidates = sorted(report_dir.glob("*_short_term_resonance.json"), key=lambda path: path.stat().st_mtime, reverse=True)
-    for path in candidates:
+        return []
+    today = normalize_trade_date("today", service.zone)
+    reports: list[dict[str, object]] = []
+    for path in sorted(report_dir.glob("*_short_term_resonance.json"), key=lambda p: p.stat().st_mtime, reverse=True):
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))
-            payload["json_path"] = str(path)
-            payload["markdown_path"] = str(path.with_suffix(".md"))
-            payload["html_path"] = str(path.with_suffix(".html"))
-            return payload
         except Exception as exc:
             LOGGER.warning("读取短线热点共振候选报告失败：%s：%s", path, exc)
-    return None
+            continue
+        if str(payload.get("trade_date", "") or "") != today:
+            continue
+        payload["json_path"] = str(path)
+        payload["markdown_path"] = str(path.with_suffix(".md"))
+        payload["html_path"] = str(path.with_suffix(".html"))
+        reports.append(payload)
+    return reports
 
 
 def build_hot_sector_service(app: Flask, service: MonitorService) -> HotSectorReportService:
@@ -145,9 +162,9 @@ def build_hot_sector_service(app: Flask, service: MonitorService) -> HotSectorRe
     return HotSectorReportService(service.settings, provider, wecom=wecom)
 
 
-def generate_hot_sector_report(app: Flask, service: MonitorService, trade_date: str, *, notify: bool, force_send: bool = False):
+def generate_hot_sector_report(app: Flask, service: MonitorService, trade_date: str, *, notify: bool, force_send: bool = False, board_type: str = "industry", force_refresh: bool = False):
     report_service = build_hot_sector_service(app, service)
-    return report_service.generate(trade_date, notify=notify, force_send=force_send)
+    return report_service.generate(trade_date, board_type=board_type, notify=notify, force_send=force_send, force_refresh=force_refresh)
 
 
 def build_hot_sector_candidate_service(app: Flask, service: MonitorService) -> HotSectorCandidateService:
@@ -200,13 +217,23 @@ def start_scheduler(app: Flask, service: MonitorService) -> None:
                 second=0,
                 timezone=service.settings.app.timezone,
             )
+            def _close_reports() -> None:
+                scope_types = service.settings.hot_sector_monitor.sector_scope.types
+                if "industry" in scope_types or not scope_types:
+                    generate_hot_sector_report(
+                        app,
+                        service,
+                        "today",
+                        notify=service.settings.hot_sector_monitor.notification.send_close_summary,
+                    )
+                if "concept" in scope_types:
+                    try:
+                        generate_hot_sector_report(app, service, "today", notify=False, board_type="concept")
+                    except Exception as exc:
+                        LOGGER.warning("收盘概念板块榜单生成失败：%s", exc)
+
             scheduler.add_job(
-                lambda: generate_hot_sector_report(
-                    app,
-                    service,
-                    "today",
-                    notify=service.settings.hot_sector_monitor.notification.send_close_summary,
-                ),
+                _close_reports,
                 trigger=close_trigger,
                 id="hot_sector_close_report",
                 max_instances=1,
@@ -266,7 +293,8 @@ def create_app(config_path: str | Path, scheduler_enabled: bool | None = None) -
             runs=service.store.list_runs(8), events=service.store.list_signal_events(12),
             stock_master_count=service.store.stock_master_count(), query=query, candidates=candidates,
             hot_sector_report=load_hot_sector_report(service),
-            hot_sector_candidate_report=load_hot_sector_candidate_report(service),
+            hot_sector_concept_report=load_hot_sector_concept_report(service),
+            hot_sector_candidate_reports=load_hot_sector_candidate_reports(service),
             auth_enabled=bool(access_token),
         )
 
@@ -304,13 +332,27 @@ def create_app(config_path: str | Path, scheduler_enabled: bool | None = None) -
     def hot_sector_report():
         notify = request.form.get("notify") == "1"
         force_send = request.form.get("force_send") == "1"
+        force_refresh = request.form.get("force_refresh") == "1"
+        scope_types = service.settings.hot_sector_monitor.sector_scope.types
+        gen_industry = "industry" in scope_types or not scope_types
+        gen_concept = "concept" in scope_types
         try:
-            result = generate_hot_sector_report(app, service, "today", notify=notify, force_send=force_send)
-            message = f"已生成热门行业板块报告：Top {len(result.top_sectors)}，{result.markdown_path.name}"
-            if result.notification:
-                message += f"；企业微信：{result.notification.detail}"
-            if result.notification_skipped_reason:
-                message += f"；{result.notification_skipped_reason}"
+            if gen_industry:
+                result = generate_hot_sector_report(app, service, "today", notify=notify, force_send=force_send, force_refresh=force_refresh)
+                message = f"已生成热门行业板块报告：Top {len(result.top_sectors)}，{result.markdown_path.name}"
+                if result.notification:
+                    message += f"；企业微信：{result.notification.detail}"
+                if result.notification_skipped_reason:
+                    message += f"；{result.notification_skipped_reason}"
+            else:
+                message = "已跳过行业板块（未在 sector_scope.types 中启用）"
+            if gen_concept:
+                try:
+                    concept = generate_hot_sector_report(app, service, "today", notify=False, board_type="concept", force_refresh=force_refresh)
+                    message += f"；概念板块榜单：Top {len(concept.top_sectors)}，{concept.markdown_path.name}"
+                except Exception as exc:
+                    LOGGER.exception("生成热门概念板块报告失败。")
+                    message += f"；概念板块榜单生成失败：{exc}"
             flash(message, "success")
         except Exception as exc:
             LOGGER.exception("生成热门行业板块报告失败。")
@@ -356,7 +398,7 @@ def create_app(config_path: str | Path, scheduler_enabled: bool | None = None) -
         except Exception as exc:
             LOGGER.exception("生成短线热点共振候选报告失败。")
             flash(f"生成短线热点共振候选报告失败：{exc}", "error")
-        return redirect(url_for("dashboard"))
+        return redirect(url_for("dashboard", _anchor="sec-candidates"))
 
     @app.post("/watchlist/add")
     def add_watch_item():

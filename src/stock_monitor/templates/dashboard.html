@@ -72,11 +72,20 @@
   </div>
 </section>
 
-<section class="panel wide">
+<nav class="board-subnav">
+  <strong>热门板块联动</strong>
+  <a href="#sec-industry">行业榜 Top10</a>
+  <a href="#sec-candidates">候选观察股</a>
+  <a href="#sec-concept">概念榜 Top10</a>
+  <a href="#sec-watchlist">监控标的</a>
+</nav>
+
+<section class="panel wide" id="sec-industry">
   <div class="section-head">
     <h2>当日热门行业板块 Top 10</h2>
     <form method="post" action="{{ url_for('hot_sector_report') }}" class="inline-actions">
       <label><input type="checkbox" name="notify" value="1"> 推送 Top 3 摘要</label>
+      <label title="清除当日缓存后强制重新抓取；若实时抓取失败会明确报错，不再回退旧缓存"><input type="checkbox" name="force_refresh" value="1"> 强制刷新（忽略缓存）</label>
       <button class="primary" type="submit">生成报告</button>
     </form>
   </div>
@@ -103,6 +112,8 @@
       </ul>
       <p class="hint">成交活跃度缺失近20日均额时会降级为换手率或当日成交额；近5日相对表现缺失时采用中性分 50，并在数据状态标签中标注。</p>
     </details>
+    <details class="board-body" open>
+      <summary>展开 / 收起行业榜单</summary>
     <div class="table-scroll">
       <table class="compact">
         <thead><tr><th>排名</th><th>板块</th><th>评分</th><th>涨跌幅</th><th>上涨覆盖</th><th>活跃度</th><th>资金流</th><th>近5日</th><th>数据状态</th><th>操作</th></tr></thead>
@@ -164,24 +175,31 @@
     {% if hot_sector_report.warnings %}
       <p class="hint">提示：{{ hot_sector_report.warnings[:2]|join('；') }}</p>
     {% endif %}
-    {% if hot_sector_candidate_report %}
-      <div class="candidate-report-summary">
-        <div class="section-head">
-          <h3>最近一次短线热点共振候选</h3>
-          <span class="muted">{{ hot_sector_candidate_report.trade_date }} ｜ {{ hot_sector_candidate_report.sector_name }} ｜ {{ hot_sector_candidate_report.strategy_name }}</span>
-        </div>
-        <div class="candidate-report-meta">
-          <span>候选 {{ hot_sector_candidate_report.candidates|length }} 支</span>
-          <span>仅观察 {{ hot_sector_candidate_report.observe_only|length }} 支</span>
-          <span>排除 {{ hot_sector_candidate_report.excluded|length }} 支</span>
-          <span>状态 {{ hot_sector_candidate_report.data_status }}</span>
-        </div>
-        {% if hot_sector_candidate_report.candidates %}
+    </details>
+  {% else %}
+    <p class="empty">尚未生成当日热门行业板块报告。收盘后会按配置自动生成，也可以点击“生成报告”。</p>
+  {% endif %}
+</section>
+
+<section class="panel wide" id="sec-candidates">
+  <div class="section-head">
+    <h2>短线热点共振候选观察股</h2>
+    <span class="muted">每个筛选过的板块各占一条，可分别展开/收起；同板块重筛会原地更新</span>
+  </div>
+  {% if hot_sector_candidate_reports %}
+    {% for rep in hot_sector_candidate_reports %}
+    <details class="candidate-collapse" {% if loop.first %}open{% endif %}>
+      <summary>
+        <span class="candidate-collapse-title">{{ rep.sector_name }} · {{ rep.strategy_name }}</span>
+        <span class="muted candidate-collapse-meta">{{ rep.trade_date }} ｜ 候选 {{ rep.candidates|length }} 支 ｜ 仅观察 {{ rep.observe_only|length }} 支 ｜ 排除 {{ rep.excluded|length }} 支 ｜ 状态 {{ rep.data_status }}</span>
+      </summary>
+      <div class="candidate-collapse-body">
+        {% if rep.candidates %}
           <div class="table-scroll">
             <table class="compact mini-table">
               <thead><tr><th>排名</th><th>股票</th><th>评分</th><th>涨跌幅</th><th>相对板块</th><th>成交额倍数</th><th>趋势</th><th>RSI</th><th>风险标签</th></tr></thead>
               <tbody>
-              {% for stock in hot_sector_candidate_report.candidates[:10] %}
+              {% for stock in rep.candidates %}
                 <tr>
                   <td>{{ stock.rank }}</td>
                   <td><strong>{{ stock.stock_name }}</strong><br><small>{{ stock.stock_code }}</small></td>
@@ -198,27 +216,99 @@
             </table>
           </div>
         {% else %}
-          <p class="empty">最近一次筛选未生成正常候选观察股。</p>
+          <p class="empty">该板块本次筛选未生成正常候选观察股。</p>
         {% endif %}
-        {% if hot_sector_candidate_report.warnings %}
+        {% if rep.warnings %}
           <div class="candidate-warning-box">
             <strong>数据提示</strong>
             <ul>
-              {% for warning in hot_sector_candidate_report.warnings[:4] %}
+              {% for warning in rep.warnings[:4] %}
                 <li>{{ warning }}</li>
               {% endfor %}
             </ul>
           </div>
         {% endif %}
-        <p class="hint">HTML报告：{{ hot_sector_candidate_report.html_path }} ｜ Markdown：{{ hot_sector_candidate_report.markdown_path }}</p>
+        <p class="hint">HTML报告：{{ rep.html_path }} ｜ Markdown：{{ rep.markdown_path }}</p>
       </div>
-    {% endif %}
+    </details>
+    {% endfor %}
   {% else %}
-    <p class="empty">尚未生成当日热门行业板块报告。收盘后会按配置自动生成，也可以点击“生成报告”。</p>
+    <p class="empty">尚未生成候选观察股。请在上方行业榜中点击某个板块的“筛选候选股”。</p>
   {% endif %}
 </section>
 
-<section class="panel wide">
+<section class="panel wide" id="sec-concept">
+  <div class="section-head">
+    <h2>当日热门概念板块 Top 10</h2>
+    <span class="muted">与行业榜单同评分口径，单独排名；概念噪音较大，仅供题材热度参考</span>
+  </div>
+  {% if hot_sector_concept_report %}
+    <p class="muted">
+      交易日期：{{ hot_sector_concept_report.trade_date }} ｜ 状态：{{ hot_sector_concept_report.data_status }} ｜ 评分模式：{{ hot_sector_concept_report.score_mode }}
+      {% if hot_sector_concept_report.provider_status and hot_sector_concept_report.provider_status.is_cached %} ｜ 使用缓存{% endif %}
+    </p>
+    <details class="board-body" open>
+      <summary>展开 / 收起概念榜单</summary>
+    <div class="table-scroll">
+      <table class="compact">
+        <thead><tr><th>排名</th><th>板块</th><th>评分</th><th>涨跌幅</th><th>上涨覆盖</th><th>活跃度</th><th>资金流</th><th>近5日</th><th>数据状态</th></tr></thead>
+        <tbody>
+        {% for item in hot_sector_concept_report.top_sectors[:10] %}
+          <tr>
+            <td>{{ item.rank }}</td>
+            <td><strong>{{ item.sector_name }}</strong><br><small>{{ item.sector_code }}</small></td>
+            <td>{{ '%.2f'|format(item.sector_score) }}</td>
+            <td class="{{ 'positive' if item.pct_change > 0 else 'negative' }}">{{ '%+.2f%%'|format(item.pct_change) }}</td>
+            <td>{{ '%.1f%%'|format(item.up_stock_ratio * 100) if item.up_stock_ratio is not none else '-' }}</td>
+            <td>
+              {% if item.activity_ratio is not none %}
+                {{ '%.2f'|format(item.activity_ratio) }}
+              {% elif item.activity_value is not none %}
+                {{ item.activity_label }} {{ '%.2f'|format(item.activity_value) }}
+              {% elif item.turnover_rate is not none %}
+                换手 {{ '%.2f%%'|format(item.turnover_rate) }}
+              {% else %}
+                -
+              {% endif %}
+            </td>
+            <td>{{ '%.2f%%'|format(item.main_net_inflow_ratio * 100) if item.main_net_inflow_ratio is not none else '-' }}</td>
+            <td>
+              {% if item.relative_return_neutral %}
+                缺失-中性分
+              {% elif item.relative_return_label == '近5日表现替代' %}
+                近5日表现 {{ '%+.2f%%'|format(item.relative_return_vs_benchmark) }}
+              {% elif item.relative_return_vs_benchmark is not none %}
+                {{ '%+.2f%%'|format(item.relative_return_vs_benchmark) }}
+              {% else %}
+                -
+              {% endif %}
+            </td>
+            <td>{{ item.data_tags|join('、') }}</td>
+          </tr>
+        {% else %}
+          <tr>
+            <td colspan="9" class="empty">
+              {% if hot_sector_concept_report.data_status == 'data_unavailable' %}
+                概念板块数据源当前不可用，本次未生成热门概念排名。请检查网络、代理规则或稍后重试。
+              {% else %}
+                今日未识别到满足条件的明显强势概念板块。
+              {% endif %}
+            </td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% if hot_sector_concept_report.warnings %}
+      <p class="hint">提示：{{ hot_sector_concept_report.warnings[:2]|join('；') }}</p>
+    {% endif %}
+    </details>
+  {% else %}
+    <p class="empty">尚未生成当日热门概念板块榜单。点击上方“生成报告”会同时生成概念榜单（需在 sector_scope.types 中启用 concept）。</p>
+  {% endif %}
+</section>
+
+<section class="panel wide" id="sec-watchlist">
   <div class="section-head"><h2>当前监控标的</h2><span>{{ snapshots|length }} 个</span></div>
   <div class="table-scroll">
     <table>

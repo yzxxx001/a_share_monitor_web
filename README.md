@@ -293,6 +293,51 @@ market:
   bypass_proxy_for_market_hosts: true
 ```
 
+## 开启 VPN / 代理时的分流配置
+
+本工程读取的行情接口（东方财富、同花顺、新浪）都是**国内站点，会拒绝境外 IP 的连接**。开启 VPN 后日志里常见如下报错，且会一路重试到兜底源甚至完全失败：
+
+```text
+provider=akshare_hot_sector source=eastmoney_direct attempt=3/3 failed=ConnectionError: RemoteDisconnected('Remote end closed connection without response')
+```
+
+程序在代码层面已尽力规避代理：直连请求都设置了 `session.trust_env = False`（忽略环境变量与 Windows 系统代理），并把行情域名写入 `NO_PROXY`。这能绕过**代理模式**的 VPN，但**绕不过 TUN / 全局模式**——后者在操作系统网络层接管所有流量，应用层无法干预。此时必须在 VPN 客户端把这些域名配置为**直连（DIRECT / 绕过）**。
+
+应用实际访问的全部域名：
+
+```text
+# 东方财富（行情 / 板块 / 资金流）
+push2.eastmoney.com
+push2his.eastmoney.com
+17.push2.eastmoney.com
+datacenter-web.eastmoney.com
+quote.eastmoney.com
+
+# 同花顺（板块 / 资金流 / 成分股 兜底源）
+data.10jqka.com.cn
+q.10jqka.com.cn
+
+# 新浪（个股日线 / 分钟 兜底源）
+hq.sinajs.cn
+money.finance.sina.com.cn
+vip.stock.finance.sina.com.cn
+```
+
+**Clash / Mihomo** 在配置的 `rules:` 段最前面加入（用后缀可覆盖所有子域名）：
+
+```yaml
+rules:
+  - DOMAIN-SUFFIX,eastmoney.com,DIRECT
+  - DOMAIN-SUFFIX,10jqka.com.cn,DIRECT
+  - DOMAIN-SUFFIX,sina.com.cn,DIRECT
+  - DOMAIN-SUFFIX,sinajs.cn,DIRECT
+  # 也可直接让所有国内 IP 走直连（确认此规则在代理规则之前）：
+  - GEOIP,CN,DIRECT
+  # ……原有规则放在后面
+```
+
+**其它客户端**：找「绕过 / Bypass / 直连规则」或「分应用代理」，把上述域名（或直接把 `python.exe` 进程）加入直连白名单即可。配置后即使开着 VPN，这些国内行情站也会用本地国内 IP 直连，`eastmoney_direct` 即可成功，无需再依赖同花顺/新浪兜底源。
+
 ## 免费数据源的注意事项
 
 - AKShare 本身无需你提供行情 Token，但它读取的公开网站数据并不是面向个人交易告警的商业 SLA 服务。
