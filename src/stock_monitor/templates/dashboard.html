@@ -153,7 +153,15 @@
               <form method="post" action="{{ url_for('hot_sector_candidates') }}" class="sector-candidate-form">
                 <input type="hidden" name="sector_name" value="{{ item.sector_name }}">
                 <input type="hidden" name="sector_code" value="{{ item.sector_code }}">
-                <input type="hidden" name="strategy" value="short_term_resonance">
+                {% if strategy_options and strategy_options|length > 1 %}
+                  <select name="strategy" class="strategy-select" aria-label="选择候选筛选策略">
+                    {% for opt in strategy_options %}
+                      <option value="{{ opt.id }}">{{ opt.display_name }}</option>
+                    {% endfor %}
+                  </select>
+                {% else %}
+                  <input type="hidden" name="strategy" value="{{ (strategy_options[0].id if strategy_options else 'short_term_resonance') }}">
+                {% endif %}
                 <button class="button-link compact-action" type="submit">筛选候选股</button>
               </form>
             </td>

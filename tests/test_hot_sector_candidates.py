@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import shutil
 from dataclasses import replace
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -85,6 +86,10 @@ def make_settings(tmp_path: Path):
     raw["app"]["dry_run"] = False
     config = tmp_path / "config.yaml"
     config.write_text(yaml.safe_dump(raw, allow_unicode=True, sort_keys=False), encoding="utf-8")
+    # 复制真实策略目录，使加载到的 strategy_configs 与生产一致（含中线稳健等变体）。
+    real_strategies = Path(__file__).parents[1] / "config" / "strategies"
+    if real_strategies.is_dir():
+        shutil.copytree(real_strategies, tmp_path / "strategies")
     return load_settings(config)
 
 
@@ -187,6 +192,37 @@ def test_sealed_limit_up_goes_to_observe_only(tmp_path):
     assert "封死涨停" in result.observe_only[0]["risk_tags"]
 
 
+def test_medium_term_strategy_runs_through(tmp_path):
+    settings = make_settings(tmp_path)
+    assert "medium_term_quality_value" in settings.hot_sector_monitor.strategy_configs
+    items = [{"stock_code": "000004", "stock_name": "正常测试"}]
+    snapshots = {"000004.SZ": quote("000004", "正常测试")}
+    daily = {"000004.SZ": bars()}
+    provider = FakeCandidateProvider(constituents=items, snapshots=snapshots, bars=daily)
+
+    result = HotSectorCandidateService(settings, provider, provider, FakeRiskProvider()).generate(
+        "20260527", sector="电网设备", strategy="medium_term_quality_value"
+    )
+
+    assert result.strategy == "medium_term_quality_value"
+    assert result.strategy_name == "中线稳健共振"
+    assert len(result.candidates) == 1
+    # 防守配方权重应已生效（trend_structure 权重高于短线配方）。
+    assert result.score_weights["trend_structure"] > result.score_weights["amount_expansion"]
+
+
+def test_unknown_strategy_raises(tmp_path):
+    settings = make_settings(tmp_path)
+    provider = FakeCandidateProvider(constituents=[], snapshots={}, bars={})
+    service = HotSectorCandidateService(settings, provider, provider, FakeRiskProvider())
+    try:
+        service.generate("20260527", sector="电网设备", strategy="no_such_strategy")
+    except ValueError as exc:
+        assert "no_such_strategy" in str(exc)
+    else:
+        raise AssertionError("未注册策略应抛出 ValueError")
+
+
 def test_amount_expansion_score_caps_extreme_volume():
     config = {
         "weights": {"relative_strength": 0.2, "amount_expansion": 0.2, "trend_structure": 0.15, "turnover_activity": 0.1, "rsi_atr_risk": 0.1, "fund_flow": 0.1, "risk_control": 0.15},
@@ -216,6 +252,34 @@ def test_rsi_extreme_hot_adds_tag_and_penalty():
     by_code = {item["stock_code"]: item for item in scored}
     assert "短线过热" in by_code["000002.SZ"]["risk_tags"]
     assert by_code["000002.SZ"]["score_components"]["rsi_atr_risk"] < by_code["000001.SZ"]["score_components"]["rsi_atr_risk"]
+
+
+def test_cumulative_return_penalty_demotes_overextended_stock():
+    config = {
+        "weights": {"relative_strength": 0.2, "amount_expansion": 0.2, "trend_structure": 0.15, "turnover_activity": 0.1, "rsi_atr_risk": 0.1, "fund_flow": 0.1, "risk_control": 0.15},
+        "thresholds": {
+            "cum_return_lookback": 10,
+            "cum_return_mild_threshold": 8.0,
+            "cum_return_severe_threshold": 20.0,
+            "cum_return_penalty_rate": 0.5,
+            "cum_return_max_penalty": 6.0,
+        },
+    }
+    scored, _, _ = score_short_term_resonance(
+        [
+            row(stock_code="000001.SZ", cum_return_nd=5.0, cum_return_lookback=10),
+            row(stock_code="000002.SZ", cum_return_nd=14.0, cum_return_lookback=10),
+            row(stock_code="000003.SZ", cum_return_nd=25.0, cum_return_lookback=10),
+        ],
+        config,
+    )
+    by_code = {item["stock_code"]: item for item in scored}
+    # 5% ≤ 8% 不扣分；14% 扣 0.5×(14−8)=3 分；25% ≥ 20% 扣满 6 分
+    assert by_code["000001.SZ"]["cum_return_penalty"] == 0.0
+    assert by_code["000002.SZ"]["cum_return_penalty"] == 3.0
+    assert by_code["000003.SZ"]["cum_return_penalty"] == 6.0
+    assert "累计涨幅过大" in by_code["000003.SZ"]["risk_tags"]
+    assert by_code["000001.SZ"]["short_term_score"] > by_code["000003.SZ"]["short_term_score"]
 
 
 def test_fund_flow_missing_uses_degraded_weights():

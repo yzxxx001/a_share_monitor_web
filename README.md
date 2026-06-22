@@ -264,6 +264,27 @@ stock-monitor web --config config/config.yaml
 
 # 只启动网页，不启用后台定时任务
 stock-monitor web --config config/config.yaml --no-scheduler
+
+# 生成某板块的候选观察股；--strategy 见下方 strategy list
+stock-monitor hot-sector candidates --sector 电网设备 --strategy short_term_resonance --config config/config.yaml
+```
+
+### 候选筛选策略（可导入/导出的配置文件）
+
+策略以「一策略一文件」的形式放在 `config/strategies/*.yaml`，自包含 `id / display_name /
+scorer / weights / thresholds / risk_penalties` 等字段。加载顺序：`config/strategies/` 目录优先
+→ `config.yaml` 内联 `strategy_configs` 回退 → 内置默认兜底。新增策略 = 往目录里放一个文件，
+网页下拉与 CLI 会自动识别；同因子换权重/阈值即可得到不同选股风格，无需改代码。
+
+```powershell
+# 列出已注册策略（id、显示名、打分引擎）
+stock-monitor strategy list --config config/config.yaml
+
+# 导出某策略为 YAML（备份/分享/二次调参）；省略 --out 则打印到 stdout
+stock-monitor strategy export short_term_resonance --out my_strategy.yaml --config config/config.yaml
+
+# 从 YAML 导入策略（落盘前做 schema 校验，校验失败不写入并返回非零退出码）
+stock-monitor strategy import my_strategy.yaml --id my_variant --config config/config.yaml
 ```
 
 ## V3.1：行情断连修复与诊断

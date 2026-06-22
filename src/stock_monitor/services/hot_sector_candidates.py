@@ -21,6 +21,7 @@ from ..providers.hot_sector import RiskEventProvider, SectorDataProvider, StockD
 from ..reports.hot_sector_candidates import build_candidate_html, build_candidate_markdown, build_candidate_wecom_summary
 from .hot_sector_report import normalize_trade_date, score_sector_snapshots
 from .risk_filter import CommonRiskFilter, RiskFilterDecision
+from .strategy_registry import get_scorer
 
 LOGGER = logging.getLogger(__name__)
 
@@ -75,11 +76,13 @@ class HotSectorCandidateService:
         force_refresh: bool = False,
     ) -> HotSectorCandidateReportResult:
         trade_date = normalize_trade_date(trade_date, self.zone)
-        if strategy != "short_term_resonance":
-            raise ValueError(f"暂不支持策略：{strategy}")
+        if strategy not in self.settings.hot_sector_monitor.strategy_configs:
+            available = ", ".join(sorted(self.settings.hot_sector_monitor.strategy_configs)) or "无"
+            raise ValueError(f"未注册的策略：{strategy}（可用：{available}）")
 
         generated_at = datetime.now(self.zone)
         config = _strategy_config(self.settings, strategy)
+        scorer = get_scorer(str(config.get("scorer", "short_term_resonance")))
         thresholds = dict(config.get("thresholds") or {})
         history_days = int(config.get("history_days", 130))
         max_candidates = int(config.get("max_candidates") or self.settings.hot_sector_monitor.candidate.max_count_per_sector)
@@ -155,6 +158,7 @@ class HotSectorCandidateService:
                     sector_name=sector_name,
                     sector_change_pct=sector_change_pct,
                     risk_decision=decision,
+                    cum_return_lookback=int(thresholds.get("cum_return_lookback", 10)),
                 )
                 if decision.is_observe_only:
                     observe_only.append(_observe_row(metric, decision))
@@ -171,7 +175,7 @@ class HotSectorCandidateService:
                 )
                 warnings.append(f"{stock_code} 单只股票行情失败，已跳过，不影响板块其它股票。")
 
-        scored, score_warnings, score_weights = score_short_term_resonance(metrics, config)
+        scored, score_warnings, score_weights = scorer(metrics, config)
         warnings.extend(score_warnings)
         candidates = scored[:max_candidates]
         for rank, row in enumerate(candidates, start=1):
@@ -238,7 +242,7 @@ class HotSectorCandidateService:
             )
             json_path.write_text(json.dumps(candidate_result_to_json(result), ensure_ascii=False, indent=2, default=str), encoding="utf-8")
 
-        LOGGER.info("短线热点共振候选报告已生成：%s；候选=%d。", markdown_path, len(candidates))
+        LOGGER.info("%s候选报告已生成：%s；候选=%d。", result.strategy_name, markdown_path, len(candidates))
         return result
 
     def _get_constituents(self, sector_name: str, sector_code: str, force_refresh: bool, warnings: list[str]) -> list[dict[str, Any]]:
@@ -278,6 +282,7 @@ def build_stock_metrics(
     sector_name: str,
     sector_change_pct: float | None,
     risk_decision: RiskFilterDecision,
+    cum_return_lookback: int = 10,
 ) -> dict[str, Any]:
     stock_code = _stock_code({**raw_stock, **quote})
     stock_name = _stock_name({**raw_stock, **quote})
@@ -311,6 +316,7 @@ def build_stock_metrics(
     pct_change = normalized_quote.get("pct_change")
     relative_return = pct_change - sector_change_pct if pct_change is not None and sector_change_pct is not None else None
     fund_flow_ratio = _fund_flow_ratio(normalized_quote)
+    cum_return_nd = _cumulative_return(close, cum_return_lookback)
 
     return {
         "stock_code": stock_code,
@@ -320,6 +326,8 @@ def build_stock_metrics(
         "pct_change": pct_change,
         "sector_change_pct": sector_change_pct,
         "relative_return": relative_return,
+        "cum_return_nd": cum_return_nd,
+        "cum_return_lookback": cum_return_lookback,
         "amount": today_amount,
         "avg20_amount": avg20_amount,
         "amount_ratio": amount_ratio,
@@ -376,10 +384,13 @@ def score_short_term_resonance(rows: list[dict[str, Any]], config: dict[str, Any
         components["risk_control"] = _risk_control_score(risk_tags, config)
 
         score = sum(components[key] * weights[key] for key in weights if key in components)
+        cum_penalty = _cumulative_penalty(row.get("cum_return_nd"), thresholds, risk_tags)
+        score -= cum_penalty
         row = dict(row)
         row["rank"] = 0
         row["short_term_score"] = round(score, 2)
         row["score_components"] = {key: round(value, 2) for key, value in components.items()}
+        row["cum_return_penalty"] = round(cum_penalty, 2)
         row["trend_state"] = trend_state
         row["rsi_state"] = _rsi_state(row.get("rsi14"))
         row["risk_tags"] = _unique(risk_tags)
@@ -560,6 +571,10 @@ def _selection_reason(row: dict[str, Any]) -> str:
     rsi = row.get("rsi_state")
     if rsi and rsi != "正常":
         parts.append(f"{rsi}，需关注追高或波动风险")
+    cum_return = row.get("cum_return_nd")
+    if cum_return is not None and row.get("cum_return_penalty"):
+        lookback = row.get("cum_return_lookback") or 10
+        parts.append(f"近{lookback}日累计涨幅{cum_return:+.1f}%，已扣{row['cum_return_penalty']:.1f}分")
     return " + ".join(parts) if parts else "数据完整度有限，仅列为观察。"
 
 
@@ -695,6 +710,34 @@ def _observe_row(metric: dict[str, Any], decision: RiskFilterDecision) -> dict[s
         "amount_ratio": metric.get("amount_ratio"),
         "data_status": "完整" if decision.data_complete else "数据不完整",
     }
+
+
+def _cumulative_return(close: pd.Series, lookback: int) -> float | None:
+    if lookback <= 0 or len(close) < lookback + 1:
+        return None
+    base = float(close.iloc[-(lookback + 1)])
+    latest = float(close.iloc[-1])
+    if base <= 0 or math.isnan(base) or math.isnan(latest):
+        return None
+    return (latest - base) / base * 100.0
+
+
+def _cumulative_penalty(value: float | None, thresholds: dict[str, Any], tags: list[str]) -> float:
+    if value is None:
+        return 0.0
+    mild = float(thresholds.get("cum_return_mild_threshold", 8.0))
+    severe = float(thresholds.get("cum_return_severe_threshold", 20.0))
+    rate = float(thresholds.get("cum_return_penalty_rate", 0.5))
+    max_penalty = float(thresholds.get("cum_return_max_penalty", 6.0))
+    if value <= mild:
+        return 0.0
+    if value >= severe:
+        penalty = max_penalty
+    else:
+        penalty = min(max_penalty, rate * (value - mild))
+    if penalty > 0:
+        tags.append("累计涨幅过大")
+    return max(0.0, penalty)
 
 
 def _ma(series: pd.Series, window: int) -> float | None:

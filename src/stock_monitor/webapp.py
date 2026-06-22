@@ -138,12 +138,18 @@ def load_hot_sector_candidate_reports(service: MonitorService) -> list[dict[str,
     if not report_dir.exists():
         return []
     today = normalize_trade_date("today", service.zone)
+    summary_stems = ("sector_summary", "concept_summary")
     reports: list[dict[str, object]] = []
-    for path in sorted(report_dir.glob("*_short_term_resonance.json"), key=lambda p: p.stat().st_mtime, reverse=True):
+    for path in sorted(report_dir.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True):
+        # 跳过板块榜单汇总文件，只取候选策略报告（含 strategy 字段，覆盖所有策略）。
+        if any(path.stem.endswith(f"_{stem}") for stem in summary_stems):
+            continue
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))
         except Exception as exc:
-            LOGGER.warning("读取短线热点共振候选报告失败：%s：%s", path, exc)
+            LOGGER.warning("读取候选策略报告失败：%s：%s", path, exc)
+            continue
+        if not payload.get("strategy"):
             continue
         if str(payload.get("trade_date", "") or "") != today:
             continue
@@ -152,6 +158,19 @@ def load_hot_sector_candidate_reports(service: MonitorService) -> list[dict[str,
         payload["html_path"] = str(path.with_suffix(".html"))
         reports.append(payload)
     return reports
+
+
+def build_strategy_options(settings) -> list[dict[str, str]]:
+    """候选筛选下拉用：已注册且可用的策略（id + 显示名），默认策略排首位。"""
+    configs = settings.hot_sector_monitor.strategy_configs
+    available = settings.hot_sector_monitor.candidate.available_strategies
+    default = settings.hot_sector_monitor.candidate.default_strategy
+    # 先取 available 中确实注册的，再补上其余已注册策略（避免漏掉新放入目录的文件）。
+    ordered_ids = [sid for sid in available if sid in configs]
+    ordered_ids += [sid for sid in sorted(configs) if sid not in ordered_ids]
+    options = [{"id": sid, "display_name": str(configs[sid].get("display_name") or sid)} for sid in ordered_ids]
+    options.sort(key=lambda opt: opt["id"] != default)  # 默认策略置顶
+    return options
 
 
 def build_hot_sector_service(app: Flask, service: MonitorService) -> HotSectorReportService:
@@ -295,6 +314,7 @@ def create_app(config_path: str | Path, scheduler_enabled: bool | None = None) -
             hot_sector_report=load_hot_sector_report(service),
             hot_sector_concept_report=load_hot_sector_concept_report(service),
             hot_sector_candidate_reports=load_hot_sector_candidate_reports(service),
+            strategy_options=build_strategy_options(service.settings),
             auth_enabled=bool(access_token),
         )
 
@@ -362,7 +382,8 @@ def create_app(config_path: str | Path, scheduler_enabled: bool | None = None) -
     @app.post("/actions/hot-sector-candidates")
     def hot_sector_candidates():
         sector = (request.form.get("sector_name") or request.form.get("sector_code") or "").strip()
-        strategy = request.form.get("strategy", "short_term_resonance").strip() or "short_term_resonance"
+        default_strategy = service.settings.hot_sector_monitor.candidate.default_strategy
+        strategy = request.form.get("strategy", default_strategy).strip() or default_strategy
         notify = request.form.get("notify") == "1"
         force_refresh = request.form.get("force_refresh") == "1"
         if not sector:
@@ -378,7 +399,7 @@ def create_app(config_path: str | Path, scheduler_enabled: bool | None = None) -
                 notify=notify,
                 force_refresh=force_refresh,
             )
-            message = f"已生成 {result.sector_name} 短线热点共振候选报告：候选 {len(result.candidates)} 支，{result.html_path.name}"
+            message = f"已生成 {result.sector_name} {result.strategy_name}候选报告：候选 {len(result.candidates)} 支，{result.html_path.name}"
             if result.observe_only:
                 message += f"；仅观察 {len(result.observe_only)} 支"
             if result.excluded:

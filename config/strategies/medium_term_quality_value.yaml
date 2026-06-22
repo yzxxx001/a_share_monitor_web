@@ -1,0 +1,59 @@
+# 中线稳健（同因子、防守配方）
+# 复用 short_term_resonance 打分引擎，但权重偏向趋势结构与风控、阈值更保守、
+# 回看周期更长——用于在同一批因子上寻找更稳的中线候选，与短线右侧动量形成对照。
+# 注意：这是“同因子换配方”的示例。若要引入 ROE/估值等全新因子，需要新增 scorer。
+id: medium_term_quality_value
+display_name: "中线稳健共振"
+scorer: short_term_resonance
+schema_version: 1
+history_days: 250
+max_candidates: 8
+
+weights:
+  relative_strength: 0.15
+  amount_expansion: 0.10
+  trend_structure: 0.25
+  turnover_activity: 0.08
+  rsi_atr_risk: 0.13
+  fund_flow: 0.07
+  risk_control: 0.22
+
+degraded_weights_no_fund_flow:
+  relative_strength: 0.16
+  amount_expansion: 0.11
+  trend_structure: 0.27
+  turnover_activity: 0.08
+  rsi_atr_risk: 0.14
+  risk_control: 0.24
+
+thresholds:
+  relative_return_weak_below: -2.5
+  relative_return_sync_low: -1.0
+  relative_return_sync_high: 2.5
+  relative_return_extreme_above: 6.0
+  amount_ratio_active: 0.8
+  amount_ratio_strong: 1.5
+  amount_ratio_extreme: 3.0
+  rsi_oversold: 35.0
+  rsi_hot: 65.0
+  rsi_extreme_hot: 75.0
+  atr_high_percentile: 70.0
+  turnover_high_percentile: 80.0
+  limit_up_pct: 9.8
+  cum_return_lookback: 20
+  cum_return_mild_threshold: 15.0
+  cum_return_severe_threshold: 35.0
+  cum_return_penalty_rate: 0.4
+  cum_return_max_penalty: 8.0
+
+risk_penalties:
+  risk_check_incomplete: 15.0
+  announcement_incomplete: 10.0
+  abnormal_volatility: 10.0
+  lhb: 6.0
+  major_reduction: 12.0
+  unlock: 12.0
+  rsi_extreme_hot: 14.0
+  extreme_amount: 10.0
+  high_volatility: 10.0
+  chasing_risk: 10.0

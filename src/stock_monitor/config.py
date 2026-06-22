@@ -1,10 +1,17 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import yaml
+
+LOGGER = logging.getLogger(__name__)
+
+# 已注册的打分引擎名称。策略文件的 scorer 字段必须落在此集合内。
+# 新增打分算法时，在 services 注册后把名字加到这里。
+KNOWN_SCORERS = frozenset({"short_term_resonance"})
 
 
 @dataclass(frozen=True)
@@ -246,6 +253,81 @@ def _default_strategy_configs() -> dict[str, Any]:
     }
 
 
+def validate_strategy_config(config: Any, *, expected_id: str | None = None) -> list[str]:
+    """校验单个策略配置，返回错误描述列表（空列表表示通过）。"""
+    errors: list[str] = []
+    if not isinstance(config, dict):
+        return ["策略配置必须是字典/映射结构"]
+
+    strategy_id = config.get("id")
+    if not strategy_id or not str(strategy_id).strip():
+        errors.append("缺少 id 字段")
+    elif expected_id is not None and str(strategy_id).strip() != expected_id:
+        errors.append(f"id（{strategy_id}）与文件名（{expected_id}）不一致")
+
+    scorer = str(config.get("scorer", "short_term_resonance")).strip()
+    if scorer not in KNOWN_SCORERS:
+        errors.append(f"未注册的 scorer：{scorer}（可用：{', '.join(sorted(KNOWN_SCORERS))}）")
+
+    weights = config.get("weights")
+    if not isinstance(weights, dict) or not weights:
+        errors.append("weights 必须是非空映射")
+    else:
+        weight_total = 0.0
+        for name, value in weights.items():
+            try:
+                weight_total += float(value)
+            except (TypeError, ValueError):
+                errors.append(f"weights.{name} 不是数值：{value!r}")
+        if weight_total <= 0:
+            errors.append("weights 归一化前的总和必须大于 0")
+
+    degraded = config.get("degraded_weights_no_fund_flow")
+    if degraded is not None:
+        if not isinstance(degraded, dict):
+            errors.append("degraded_weights_no_fund_flow 必须是映射")
+        elif isinstance(weights, dict):
+            extra = set(degraded) - set(weights)
+            if extra:
+                errors.append(f"degraded_weights_no_fund_flow 含 weights 中不存在的项：{', '.join(sorted(extra))}")
+
+    for section in ("thresholds", "risk_penalties"):
+        values = config.get(section)
+        if values is None:
+            continue
+        if not isinstance(values, dict):
+            errors.append(f"{section} 必须是映射")
+            continue
+        for name, value in values.items():
+            try:
+                float(value)
+            except (TypeError, ValueError):
+                errors.append(f"{section}.{name} 不是数值：{value!r}")
+
+    return errors
+
+
+def _load_strategy_files(config_dir: Path) -> dict[str, Any]:
+    """从 config/strategies/*.yaml 加载策略配置；坏文件跳过并记 WARNING。"""
+    strategies_dir = config_dir / "strategies"
+    if not strategies_dir.is_dir():
+        return {}
+    configs: dict[str, Any] = {}
+    for path in sorted(strategies_dir.glob("*.yaml")):
+        try:
+            raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        except yaml.YAMLError as exc:
+            LOGGER.warning("策略文件解析失败，已跳过：%s（%s）", path.name, exc)
+            continue
+        expected_id = path.stem
+        errors = validate_strategy_config(raw, expected_id=expected_id)
+        if errors:
+            LOGGER.warning("策略文件校验失败，已跳过：%s（%s）", path.name, "；".join(errors))
+            continue
+        configs[str(raw.get("id", expected_id))] = dict(raw)
+    return configs
+
+
 def load_settings(config_file: str | Path) -> Settings:
     config_path = Path(config_file).resolve()
     project_root = config_path.parent.parent
@@ -265,7 +347,12 @@ def load_settings(config_file: str | Path) -> Settings:
     sector_schedule = hot_sector.get("schedule", {})
     sector_candidate = hot_sector.get("candidate", {})
     sector_risk = hot_sector.get("common_risk_filter", {})
-    strategy_configs = hot_sector.get("strategy_configs") or _default_strategy_configs()
+    # 优先从 config/strategies/ 目录加载；回退到内联块；再回退到内置默认。
+    strategy_configs = (
+        _load_strategy_files(config_path.parent)
+        or hot_sector.get("strategy_configs")
+        or _default_strategy_configs()
+    )
     sector_filter = hot_sector.get("sector_filter", {})
     sector_notification = hot_sector.get("notification", {})
     sector_http = hot_sector.get("http", {})

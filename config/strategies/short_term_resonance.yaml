@@ -1,0 +1,59 @@
+# 短线热点共振策略
+# 同因子打分引擎（scorer: short_term_resonance）下的配置变体。
+# 可复制本文件、改权重/阈值后另存为新策略，下拉与 CLI 会自动识别。
+id: short_term_resonance
+display_name: "短线热点共振"
+scorer: short_term_resonance
+schema_version: 1
+history_days: 130
+max_candidates: 10
+
+weights:
+  relative_strength: 0.20
+  amount_expansion: 0.20
+  trend_structure: 0.15
+  turnover_activity: 0.10
+  rsi_atr_risk: 0.10
+  fund_flow: 0.10
+  risk_control: 0.15
+
+# 资金流字段缺失时的降级权重（key 必须是 weights 的子集，去掉 fund_flow）。
+degraded_weights_no_fund_flow:
+  relative_strength: 0.23
+  amount_expansion: 0.22
+  trend_structure: 0.17
+  turnover_activity: 0.11
+  rsi_atr_risk: 0.11
+  risk_control: 0.16
+
+thresholds:
+  relative_return_weak_below: -2.0
+  relative_return_sync_low: -1.0
+  relative_return_sync_high: 3.0
+  relative_return_extreme_above: 7.0
+  amount_ratio_active: 1.0
+  amount_ratio_strong: 2.0
+  amount_ratio_extreme: 4.0
+  rsi_oversold: 30.0
+  rsi_hot: 70.0
+  rsi_extreme_hot: 80.0
+  atr_high_percentile: 80.0
+  turnover_high_percentile: 85.0
+  limit_up_pct: 9.8
+  cum_return_lookback: 10
+  cum_return_mild_threshold: 8.0
+  cum_return_severe_threshold: 20.0
+  cum_return_penalty_rate: 0.5
+  cum_return_max_penalty: 6.0
+
+risk_penalties:
+  risk_check_incomplete: 15.0
+  announcement_incomplete: 10.0
+  abnormal_volatility: 8.0
+  lhb: 5.0
+  major_reduction: 10.0
+  unlock: 10.0
+  rsi_extreme_hot: 12.0
+  extreme_amount: 8.0
+  high_volatility: 8.0
+  chasing_risk: 8.0

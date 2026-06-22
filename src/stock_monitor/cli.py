@@ -4,9 +4,10 @@ import argparse
 import logging
 from pathlib import Path
 
+import yaml
 from dotenv import load_dotenv
 
-from .config import load_settings
+from .config import load_settings, validate_strategy_config
 from .notifiers import AliyunSmsNotifier, WeComNotifier
 from .positions import load_positions
 from .runner import MonitorService, build_service, configure_logging
@@ -58,11 +59,24 @@ def _build_parser() -> argparse.ArgumentParser:
     candidates = hot_sector_sub.add_parser("candidates", help="生成热门行业板块内短线候选观察股")
     candidates.add_argument("--date", default="today", help="交易日期：today、YYYYMMDD 或 YYYY-MM-DD")
     candidates.add_argument("--sector", required=True, help="板块名称或代码，例如：电网设备")
-    candidates.add_argument("--strategy", default="short_term_resonance", help="候选策略，默认 short_term_resonance")
+    candidates.add_argument("--strategy", default="short_term_resonance", help="候选策略 id（见 `strategy list`），默认 short_term_resonance")
     candidate_notify = candidates.add_mutually_exclusive_group()
     candidate_notify.add_argument("--notify", action="store_true", help="推送候选观察摘要")
     candidate_notify.add_argument("--no-notify", action="store_true", help="只生成报告，不推送")
     candidates.add_argument("--force-refresh", action="store_true", help="强制刷新本次板块、成分股与个股缓存")
+
+    strategy = sub.add_parser("strategy", help="管理候选筛选策略配置文件（列出/导出/导入）")
+    strategy_sub = strategy.add_subparsers(dest="strategy_action", required=True)
+    strategy_list = strategy_sub.add_parser("list", help="列出已注册策略")
+    strategy_list.add_argument("--config", default=DEFAULT_CONFIG)
+    strategy_export = strategy_sub.add_parser("export", help="导出某策略为 YAML（用于备份/分享/二次调参）")
+    strategy_export.add_argument("id", help="策略 id")
+    strategy_export.add_argument("--config", default=DEFAULT_CONFIG)
+    strategy_export.add_argument("--out", default=None, help="输出文件路径；省略则打印到 stdout")
+    strategy_import = strategy_sub.add_parser("import", help="从 YAML 导入策略（落盘前会做 schema 校验）")
+    strategy_import.add_argument("source", help="策略 YAML 文件路径")
+    strategy_import.add_argument("--config", default=DEFAULT_CONFIG)
+    strategy_import.add_argument("--id", default=None, dest="override_id", help="覆盖策略 id（默认取文件内 id，再取文件名）")
     return parser
 
 
@@ -143,11 +157,77 @@ def _hot_sector_candidates(
         notify=notify,
         force_refresh=force_refresh,
     )
-    LOGGER.info("短线热点共振候选报告 Markdown：%s", result.markdown_path)
-    LOGGER.info("短线热点共振候选报告 JSON：%s", result.json_path)
-    LOGGER.info("短线热点共振候选报告 HTML：%s", result.html_path)
+    LOGGER.info("%s候选报告 Markdown：%s", result.strategy_name, result.markdown_path)
+    LOGGER.info("%s候选报告 JSON：%s", result.strategy_name, result.json_path)
+    LOGGER.info("%s候选报告 HTML：%s", result.strategy_name, result.html_path)
     if result.notification:
         LOGGER.info("候选摘要推送：%s", result.notification.detail)
+    return 0
+
+
+def _strategy_dir(config_path: str) -> Path:
+    return Path(config_path).resolve().parent / "strategies"
+
+
+def _strategy_list(config_path: str) -> int:
+    settings = _load_for_non_market_commands(config_path)
+    configs = settings.hot_sector_monitor.strategy_configs
+    if not configs:
+        LOGGER.info("未注册任何策略。")
+        return 0
+    default = settings.hot_sector_monitor.candidate.default_strategy
+    LOGGER.info("已注册策略 %d 个：", len(configs))
+    for strategy_id in sorted(configs):
+        cfg = configs[strategy_id]
+        mark = "（默认）" if strategy_id == default else ""
+        LOGGER.info(
+            "  - %s%s  名称=%s  引擎=%s",
+            strategy_id, mark, cfg.get("display_name", ""), cfg.get("scorer", "short_term_resonance"),
+        )
+    return 0
+
+
+def _strategy_export(config_path: str, strategy_id: str, out: str | None) -> int:
+    settings = _load_for_non_market_commands(config_path)
+    configs = settings.hot_sector_monitor.strategy_configs
+    if strategy_id not in configs:
+        LOGGER.error("未找到策略：%s（可用：%s）", strategy_id, ", ".join(sorted(configs)) or "无")
+        return 1
+    text = yaml.safe_dump(dict(configs[strategy_id]), allow_unicode=True, sort_keys=False)
+    if out:
+        out_path = Path(out)
+        out_path.write_text(text, encoding="utf-8")
+        LOGGER.info("已导出策略 %s 到 %s", strategy_id, out_path)
+    else:
+        print(text)  # stdout，便于重定向/管道
+    return 0
+
+
+def _strategy_import(config_path: str, source: str, override_id: str | None) -> int:
+    src = Path(source)
+    if not src.is_file():
+        LOGGER.error("文件不存在：%s", src)
+        return 1
+    try:
+        raw = yaml.safe_load(src.read_text(encoding="utf-8")) or {}
+    except yaml.YAMLError as exc:
+        LOGGER.error("YAML 解析失败：%s", exc)
+        return 1
+    if not isinstance(raw, dict):
+        LOGGER.error("策略文件内容必须是映射结构。")
+        return 1
+    strategy_id = str(override_id or raw.get("id") or src.stem).strip()
+    raw["id"] = strategy_id
+    errors = validate_strategy_config(raw, expected_id=strategy_id)
+    if errors:
+        for error in errors:
+            LOGGER.error("校验失败：%s", error)
+        return 1
+    dest_dir = _strategy_dir(config_path)
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest = dest_dir / f"{strategy_id}.yaml"
+    dest.write_text(yaml.safe_dump(raw, allow_unicode=True, sort_keys=False), encoding="utf-8")
+    LOGGER.info("已导入策略 %s 到 %s", strategy_id, dest)
     return 0
 
 
@@ -213,6 +293,13 @@ def main() -> int:
                 args.force_refresh,
             )
         return _hot_sector(args.config, args.date, args.notify, args.force_send)
+    if args.command == "strategy":
+        if args.strategy_action == "list":
+            return _strategy_list(args.config)
+        if args.strategy_action == "export":
+            return _strategy_export(args.config, args.id, args.out)
+        if args.strategy_action == "import":
+            return _strategy_import(args.config, args.source, args.override_id)
     service = build_service(args.config)
     if args.command == "import-excel":
         count, warnings = service.import_excel_positions()

@@ -29,18 +29,19 @@ def build_candidate_markdown(result: HotSectorCandidateReportResult) -> str:
     if result.candidates:
         lines.extend(
             [
-                "| 排名 | 股票代码 | 股票名称 | 总评分 | 当日涨跌幅 | 相对板块表现 | 成交额倍数 | 趋势状态 | RSI状态 | 风险标签 | 数据完整状态 |",
-                "|---:|---|---|---:|---:|---:|---:|---|---|---|---|",
+                "| 排名 | 股票代码 | 股票名称 | 总评分 | 当日涨跌幅 | 近N日累计涨幅 | 相对板块表现 | 成交额倍数 | 趋势状态 | RSI状态 | 风险标签 | 数据完整状态 |",
+                "|---:|---|---|---:|---:|---:|---:|---:|---|---|---|---|",
             ]
         )
         for item in result.candidates:
             lines.append(
-                "| {rank} | {code} | {name} | {score} | {pct} | {relative} | {amount_ratio} | {trend} | {rsi} | {tags} | {status} |".format(
+                "| {rank} | {code} | {name} | {score} | {pct} | {cum} | {relative} | {amount_ratio} | {trend} | {rsi} | {tags} | {status} |".format(
                     rank=item.get("rank", ""),
                     code=item.get("stock_code", ""),
                     name=item.get("stock_name", ""),
                     score=_fmt(item.get("short_term_score")),
                     pct=_pct(item.get("pct_change")),
+                    cum=_pct(item.get("cum_return_nd")),
                     relative=_pct(item.get("relative_return")),
                     amount_ratio=_ratio(item.get("amount_ratio")),
                     trend=item.get("trend_state", ""),
@@ -97,6 +98,7 @@ def build_candidate_html(result: HotSectorCandidateReportResult) -> str:
         f"<td><strong>{escape(str(item.get('stock_name', '')))}</strong><br><small>{escape(str(item.get('stock_code', '')))}</small></td>"
         f"<td>{escape(_fmt(item.get('short_term_score')))}</td>"
         f"<td class=\"{_pos_neg(item.get('pct_change'))}\">{escape(_pct(item.get('pct_change')))}</td>"
+        f"<td class=\"{_pos_neg(item.get('cum_return_nd'))}\">{escape(_pct(item.get('cum_return_nd')))}</td>"
         f"<td>{escape(_pct(item.get('relative_return')))}</td>"
         f"<td>{escape(_ratio(item.get('amount_ratio')))}</td>"
         f"<td>{escape(str(item.get('trend_state', '')))}</td>"
@@ -107,7 +109,7 @@ def build_candidate_html(result: HotSectorCandidateReportResult) -> str:
         for item in result.candidates
     )
     if not candidate_rows:
-        candidate_rows = '<tr><td colspan="10" class="empty">本次未生成正常候选观察股。</td></tr>'
+        candidate_rows = '<tr><td colspan="11" class="empty">本次未生成正常候选观察股。</td></tr>'
 
     observe_rows = _simple_rows(result.observe_only, empty="无仅观察标的。")
     excluded_rows = _simple_rows(result.excluded, empty="无被排除标的。")
@@ -151,7 +153,7 @@ def build_candidate_html(result: HotSectorCandidateReportResult) -> str:
   <section>
     <h2>候选观察股 Top 10</h2>
     <table>
-      <thead><tr><th>排名</th><th>股票</th><th>总评分</th><th>当日涨跌幅</th><th>相对板块</th><th>成交额倍数</th><th>趋势状态</th><th>RSI状态</th><th>风险标签</th><th>数据状态</th></tr></thead>
+      <thead><tr><th>排名</th><th>股票</th><th>总评分</th><th>当日涨跌幅</th><th>近N日累计涨幅</th><th>相对板块</th><th>成交额倍数</th><th>趋势状态</th><th>RSI状态</th><th>风险标签</th><th>数据状态</th></tr></thead>
       <tbody>{candidate_rows}</tbody>
     </table>
   </section>
