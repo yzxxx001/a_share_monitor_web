@@ -137,11 +137,45 @@ def _synthetic_quote(bar: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _board_name_maps(provider: AKShareHotSectorProvider) -> tuple[dict[str, str], dict[str, str]]:
+    """汇总东财行业 + 概念板块的 名称→BK码 与 BK码→名称 映射。"""
+    name_to_code: dict[str, str] = {}
+    code_to_name: dict[str, str] = {}
+    for board_type in ("industry", "concept"):
+        try:
+            mapping = provider._fetch_board_name_code_map(board_type)
+        except Exception:  # noqa: BLE001
+            mapping = {}
+        for name, code in mapping.items():
+            code = str(code).upper()
+            name_to_code.setdefault(name, code)
+            code_to_name.setdefault(code, name)
+    return name_to_code, code_to_name
+
+
 def _resolve_sectors(provider: AKShareHotSectorProvider, settings: Any, sectors_arg: str | None, top_n: int) -> list[tuple[str, str]]:
-    """返回 [(板块名, 板块代码)]。显式给定则用之；否则取当前热门行业 Top-N。"""
+    """返回 [(显示名, BK代码)]。
+
+    --sectors 支持：中文板块名（自动查行业+概念名表解析为 BK 码，行业/概念均可）、
+    或直接给 BK 码（反查中文名做显示）；缺省时取当前热门行业 Top-N。
+    解析不到 BK 码的名称会原样保留（后续按名称尝试取成分股）。
+    """
     if sectors_arg:
-        names = [s.strip() for s in sectors_arg.split(",") if s.strip()]
-        return [(name, name) for name in names]
+        tokens = [s.strip() for s in sectors_arg.split(",") if s.strip()]
+        name_to_code, code_to_name = _board_name_maps(provider)
+        out: list[tuple[str, str]] = []
+        for tok in tokens:
+            upper = tok.upper()
+            if upper.startswith("BK"):
+                out.append((code_to_name.get(upper, tok), upper))            # 直接给码：反查中文名
+            elif tok in name_to_code:
+                out.append((tok, name_to_code[tok]))                          # 精确名匹配
+            else:
+                code = provider._match_ths_sector(tok, name_to_code)          # 模糊名匹配
+                if code:
+                    print(f"  [提示] 板块名“{tok}”未精确匹配，已模糊匹配到 {code_to_name.get(code, code)}（{code}）")
+                out.append((tok, code or tok))
+        return out
     snapshots = provider.get_industry_sector_rank("today")
     scored = _score_sectors(snapshots, settings, [])
     out: list[tuple[str, str]] = []
@@ -236,16 +270,30 @@ def main() -> int:
     configs = {name: dict(settings.hot_sector_monitor.strategy_configs[name]) for name in strategies}
 
     sectors = _resolve_sectors(provider, settings, args.sectors, args.top_sectors)
-    print(f"回测板块（{len(sectors)}）：{', '.join(name for name, _ in sectors)}")
+
+    def _label(name: str, code: str) -> str:
+        return f"{name}[{code}]" if code and code.upper().startswith("BK") and code != name else name
+
+    print(f"回测板块（{len(sectors)}）：{', '.join(_label(n, c) for n, c in sectors)}")
 
     # 拉取每个板块的成分股与每只股票的完整日线（一次性，带缓存）
     sector_members: dict[str, list[StockHistory]] = {}
+    sector_code_by_name: dict[str, str] = {}
     all_dates: set[date] = set()
-    for sector_name, sector_id in sectors:
-        try:
-            constituents = provider.get_sector_constituents(sector_name) or provider.get_sector_constituents(sector_id)
-        except Exception as exc:  # noqa: BLE001
-            print(f"  [跳过] 板块 {sector_name} 成分股获取失败：{exc}")
+    for sector_name, sector_code in sectors:
+        constituents: list[dict[str, Any]] = []
+        for ident in (sector_code, sector_name):  # BK 码优先（东财直连最稳），再退回名称
+            if not ident:
+                continue
+            try:
+                rows = provider.get_sector_constituents(ident)
+            except Exception:  # noqa: BLE001
+                rows = []
+            if rows:
+                constituents = rows
+                break
+        if not constituents:
+            print(f"  [跳过] 板块 {_label(sector_name, sector_code)} 成分股获取失败")
             continue
         members: list[StockHistory] = []
         for raw in constituents:
@@ -263,7 +311,8 @@ def main() -> int:
             members.append(hist)
             all_dates.update(hist.dates)
         sector_members[sector_name] = members
-        print(f"  板块 {sector_name}: 可回测成分股 {len(members)} 只")
+        sector_code_by_name[sector_name] = sector_code
+        print(f"  板块 {_label(sector_name, sector_code)}: 可回测成分股 {len(members)} 只")
 
     if not all_dates:
         print("无可用行情，退出。")
@@ -324,7 +373,7 @@ def main() -> int:
                         raw_stock={"代码": hist.code, "名称": hist.name},
                         quote=quote,
                         daily_bars=asof_bars,
-                        sector_code=sector_name,
+                        sector_code=sector_code_by_name.get(sector_name, sector_name),
                         sector_name=sector_name,
                         sector_change_pct=sector_change_pct,
                         risk_decision=decision,

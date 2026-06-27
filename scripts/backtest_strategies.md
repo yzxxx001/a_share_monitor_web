@@ -26,7 +26,7 @@ python scripts/backtest_strategies.py [参数...]
 | 参数 | 默认值 | 说明 |
 |---|---|---|
 | `--config` | `config/config.yaml` | 配置文件路径，用于加载策略与数据源设置 |
-| `--sectors` | 无 | 逗号分隔的板块名，如 `硅料硅片,橡胶助剂`。**指定则用之**；缺省时取当前热门行业 Top-N |
+| `--sectors` | 无 | 逗号分隔的板块，支持**中文板块名**（自动查行业+概念名表解析为 BK 码，行业/概念均可，如 `中芯概念,硅料硅片`）或**直接 BK 码**（如 `BK0935,BK1057`，会反查中文名）。**指定则用之**；缺省时取当前热门行业 Top-N。输出统一显示为 `名称[BKxxxx]` |
 | `--top-sectors` | `5` | 未指定 `--sectors` 时，取当前热门行业排名前 N 个作为回测板块 |
 | `--start` | 数据起点 | 回测开始日 `YYYYMMDD`（缺省=可用行情的最早日） |
 | `--end` | 最新可回测日 | 回测结束日 `YYYYMMDD`（缺省=最新日；会自动留出最大前瞻天数） |
@@ -43,7 +43,13 @@ python scripts/backtest_strategies.py [参数...]
 ## 用法示例
 
 ```bash
-# 两个窄板块，强制每板块每日只选 2 只，区间 5/1~6/20
+# 中文板块名（行业/概念混写均可，自动解析 BK 码），成分股多的概念板块更适合分析
+python scripts/backtest_strategies.py --sectors 中芯概念,高带宽内存,硅料硅片 --start 20260301 --end 20260620 --max-candidates 3 --entry open
+
+# 也可直接给 BK 码（等价写法）
+python scripts/backtest_strategies.py --sectors BK0935,BK1152,BK1319 --start 20260301 --end 20260620 --max-candidates 3 --entry open
+
+# 两个窄板块，强制每板块每日只选 2 只
 python scripts/backtest_strategies.py --sectors 硅料硅片,橡胶助剂 --start 20260501 --end 20260620 --max-candidates 2
 
 # 当前热门行业 Top-6，区间 3/1~6/20（样本更大、更有统计意义；但拉取股票多、较慢）
