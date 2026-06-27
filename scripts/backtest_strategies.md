@@ -31,7 +31,8 @@ python scripts/backtest_strategies.py [参数...]
 | `--start` | 数据起点 | 回测开始日 `YYYYMMDD`（缺省=可用行情的最早日） |
 | `--end` | 最新可回测日 | 回测结束日 `YYYYMMDD`（缺省=最新日；会自动留出最大前瞻天数） |
 | `--strategies` | `short_term_resonance,short_term_resonance_v1` | 逗号分隔的策略 id 列表；须已在 `config/strategies/` 注册。恰好两个时额外打印差值 |
-| `--horizons` | `1,3` | 前瞻交易日数（胜率统计的持有期），逗号分隔，可自定义如 `1,3,5` |
+| `--horizons` | `1,3,5,10` | 前瞻交易日数（胜率统计的持有期），逗号分隔，可自定义 |
+| `--entry` | `close` | 入场价：`close`=D 收盘买入；`open`=D+1 开盘买入（选股仍基于 D 收盘信息，但用次日开盘价入场，避免追走强当日的收盘高点）。两种方式都在 T+h 收盘卖出 |
 | `--max-candidates` | 策略配置值 | 覆盖每板块每日选股数。**窄板块必须调小**（如 `2`）才能体现选股差异，否则会把全部成分股选上 |
 | `--history-days` | `130` | 打分所需的历史窗口，与策略 `history_days` 对齐 |
 | `--fetch-days` | `320` | 每只股票拉取的日线根数；回测区间越久需调大（须覆盖 `start` 之前 `history_days` 根 + 之后前瞻根） |
@@ -90,6 +91,8 @@ python scripts/backtest_strategies.py --sectors 半导体 --horizons 1,3,5 --max
 - **幸存者偏差**：成分股取“当前”板块名单，不还原历史调入调出。
 - **不含资金流维度**：默认按 `degraded` 权重（两版完全一致），以**隔离“累计涨幅惩罚”的影响**——
   两版输入相同，差异仅来自策略配置，对比是公平的。
-- **理想成交假设**：close-to-close，不计手续费、滑点、涨跌停无法成交等。
+- **理想成交假设**：`--entry close` 为 close-to-close、`--entry open` 为次日开盘买入到 T+h 收盘；
+  两者都不计手续费、滑点、涨跌停无法成交等。`--entry close` 相当于"追走强当日的收盘价"，对动量式
+  选股偏不利；`--entry open` 更接近"收盘后决策、次日开盘执行"的现实操作。
 - **窄板块无区分度**：合格股 ≤ `max_candidates` 时两版会选上全部股票，结果等于基线。务必用
   `--max-candidates` 调小，或换成分股较多 / 更多板块以扩大样本。

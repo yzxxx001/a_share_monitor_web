@@ -67,6 +67,14 @@ def _bar_close(bar: dict[str, Any]) -> float | None:
         return None
 
 
+def _bar_open(bar: dict[str, Any]) -> float | None:
+    value = bar.get("开盘", bar.get("open"))
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def _bar_pct(bar: dict[str, Any]) -> float | None:
     value = bar.get("涨跌幅", bar.get("pct_change"))
     try:
@@ -86,6 +94,7 @@ class StockHistory:
         self.dates = [d for d, _ in rows]
         self.bars = [b for _, b in rows]
         self.closes = [_bar_close(b) for b in self.bars]
+        self.opens = [_bar_open(b) for b in self.bars]
         self._index = {d: i for i, d in enumerate(self.dates)}
 
     def index_of(self, d: date) -> int | None:
@@ -94,11 +103,24 @@ class StockHistory:
     def bars_asof(self, idx: int) -> list[dict[str, Any]]:
         return self.bars[: idx + 1]
 
-    def forward_return(self, idx: int, horizon: int) -> float | None:
-        if idx + horizon >= len(self.closes):
+    def forward_return(self, idx: int, horizon: int, entry: str = "close") -> float | None:
+        """前瞻收益（%）。
+
+        entry="close"：D 收盘买入，D+horizon 收盘卖出（close-to-close）。
+        entry="open" ：D+1 开盘买入，D+horizon 收盘卖出——选股仍基于 D 收盘信息，
+                       但用次日开盘价入场，避免"追在走强当天的收盘高点"。
+        """
+        exit_i = idx + horizon
+        if exit_i >= len(self.closes):
             return None
-        base = self.closes[idx]
-        future = self.closes[idx + horizon]
+        future = self.closes[exit_i]
+        if entry == "open":
+            entry_i = idx + 1
+            if entry_i >= len(self.opens):
+                return None
+            base = self.opens[entry_i]
+        else:
+            base = self.closes[idx]
         if base is None or future is None or base <= 0:
             return None
         return (future - base) / base * 100.0
@@ -190,7 +212,9 @@ def main() -> int:
     parser.add_argument("--start", default=None, help="回测开始日 YYYYMMDD（缺省=可用数据起点）")
     parser.add_argument("--end", default=None, help="回测结束日 YYYYMMDD（缺省=最新可回测日）")
     parser.add_argument("--strategies", default="short_term_resonance,short_term_resonance_v1")
-    parser.add_argument("--horizons", default="1,3", help="前瞻交易日数，逗号分隔")
+    parser.add_argument("--horizons", default="1,3,5,10", help="前瞻交易日数，逗号分隔")
+    parser.add_argument("--entry", choices=("close", "open"), default="close",
+                        help="入场价：close=D 收盘买入；open=D+1 开盘买入（避免追当日收盘高点）")
     parser.add_argument("--max-candidates", type=int, default=None, help="覆盖每板块每日选股数；窄板块需调小才能体现选股差异")
     parser.add_argument("--history-days", type=int, default=130, help="打分所需的历史窗口（与策略 history_days 对齐）")
     parser.add_argument("--fetch-days", type=int, default=320, help="每只股票拉取的日线根数")
@@ -253,7 +277,8 @@ def main() -> int:
     if end > last_ok:
         end = last_ok
     backtest_dates = [d for d in trading_dates if start <= d <= end]
-    print(f"回测区间：{start} ~ {end}，交易日 {len(backtest_dates)} 天\n")
+    entry_label = "次日开盘买入" if args.entry == "open" else "当日收盘买入"
+    print(f"回测区间：{start} ~ {end}，交易日 {len(backtest_dates)} 天；入场方式：{entry_label}（卖出=T+h 收盘）\n")
 
     # 统计容器：保存 (交易日, 前瞻收益) 以便按日做 block bootstrap 显著性检验。
     results: dict[str, dict[int, list[tuple[date, float]]]] = {s: {h: [] for h in horizons} for s in strategies}
@@ -321,7 +346,7 @@ def main() -> int:
                     continue
                 seen_baseline.add(key)
                 for h in horizons:
-                    fr = metric["_hist"].forward_return(metric["_idx"], h)
+                    fr = metric["_hist"].forward_return(metric["_idx"], h, args.entry)
                     if fr is not None:
                         baseline[h].append((d, fr))
 
@@ -339,12 +364,12 @@ def main() -> int:
                         continue
                     pick_counts[strat] += 1
                     for h in horizons:
-                        fr = src["_hist"].forward_return(src["_idx"], h)
+                        fr = src["_hist"].forward_return(src["_idx"], h, args.entry)
                         if fr is not None:
                             results[strat][h].append((d, fr))
                     if args.verbose:
                         print(f"  {d} {sector_name:>6} [{strat:>26}] {row['stock_code']} {src['stock_name']} "
-                              f"score={row['short_term_score']} fwd1={src['_hist'].forward_return(src['_idx'],1)}")
+                              f"score={row['short_term_score']} fwd1={src['_hist'].forward_return(src['_idx'],1,args.entry)}")
 
     # ===== 汇总输出 =====
     def _summ(rows: list[tuple[date, float]]) -> str:
