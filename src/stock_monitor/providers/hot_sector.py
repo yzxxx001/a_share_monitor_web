@@ -592,6 +592,10 @@ class AKShareHotSectorProvider(ResilientProvider, SectorDataProvider, StockDataP
 
     def _fetch_stock_snapshot(self, stock_code: str) -> Any:
         symbol = stock_code.split(".", maxsplit=1)[0].zfill(6)
+        rows = self._fetch_stock_snapshot_base(symbol)
+        return self._enrich_snapshot_fund_flow(symbol, rows)
+
+    def _fetch_stock_snapshot_base(self, symbol: str) -> Any:
         # 1. 优先：东方财富单只股票实时接口（push2 单股查询，交易时间内有效）
         try:
             rows = self._fetch_stock_snapshot_realtime(symbol)
@@ -616,6 +620,67 @@ class AKShareHotSectorProvider(ResilientProvider, SectorDataProvider, StockDataP
         if df is None or df.empty:
             return []
         return [df.iloc[-1].to_dict()]
+
+    def _enrich_snapshot_fund_flow(self, symbol: str, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """为个股快照补全当日主力净流入额与主力净占比。
+
+        盘后东方财富实时快照接口（push2 单股 f62）失效（返回占位值 1，且无 f12），导致快照
+        走 K 线/新浪日线分支时不带资金流，候选短线评分长期缺失资金流维度并整体降级。改用
+        push2his 资金流日线接口（盘后仍按交易日给值）补全。best-effort：失败或已有有效值时
+        保持原样，不影响其它字段。
+        """
+        if not rows:
+            return rows
+        head = rows[0]
+        existing = self._first_float(head, "主力净流入", "main_net_inflow")
+        if existing is not None and abs(existing) > 1:  # 已有有效值（如交易时段 f62），不覆盖
+            return rows
+        try:
+            flow = self._fetch_latest_fund_flow(symbol)
+        except Exception:
+            return rows
+        if not flow:
+            return rows
+        enriched = dict(head)
+        enriched["主力净流入"] = flow["main_net_inflow"]
+        if flow.get("main_net_inflow_ratio") is not None:
+            enriched["主力净流入占比"] = flow["main_net_inflow_ratio"]
+        return [enriched, *rows[1:]]
+
+    def _fetch_latest_fund_flow(self, symbol: str) -> dict[str, float | None] | None:
+        """直连 push2his 资金流日线接口，取最近交易日主力净流入额与主力净占比（盘后可用）。"""
+        from ..market import infer_exchange
+
+        exchange = infer_exchange(symbol)
+        exchange_id = "1" if exchange == "SH" else "0"
+        payload = self.http_get_json_direct(
+            "https://push2his.eastmoney.com/api/qt/stock/fflow/daykline/get",
+            params={
+                "secid": f"{exchange_id}.{symbol}",
+                "fields1": "f1,f2,f3,f7",
+                "fields2": "f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61,f62,f63,f64,f65",
+                "klt": "101",
+                "lmt": 1,
+            },
+            headers={"Referer": "https://quote.eastmoney.com/"},
+        )
+        klines = ((payload or {}).get("data") or {}).get("klines") or []
+        if not klines:
+            return None
+        # 格式: 日期,主力净流入,小单净流入,中单净流入,大单净流入,超大单净流入,主力净占比,...
+        parts = str(klines[-1]).split(",")
+        if len(parts) < 7:
+            return None
+        try:
+            main_net_inflow = float(parts[1])
+        except ValueError:
+            return None
+        ratio: float | None = None
+        try:
+            ratio = float(parts[6]) / 100.0  # 主力净占比(%) -> 小数，与板块层 net_inflow_ratio 口径一致
+        except ValueError:
+            ratio = None
+        return {"main_net_inflow": main_net_inflow, "main_net_inflow_ratio": ratio}
 
     def _fetch_stock_snapshot_from_kline(self, symbol: str) -> list[dict[str, Any]]:
         """通过 push2his kline 接口直连获取最近日线数据作为快照（绕过代理，该接口可访问）。"""

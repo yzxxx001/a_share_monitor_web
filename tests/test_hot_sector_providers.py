@@ -223,6 +223,44 @@ def test_eastmoney_direct_source_maps_api_fields(tmp_path):
     assert rows[0].provider_status.source == "eastmoney_direct"
 
 
+def test_stock_snapshot_enriches_fund_flow_when_realtime_unavailable(tmp_path):
+    """盘后快照走 K 线分支（无主力净流入）时，应通过 push2his 资金流日线补全主力净流入与净占比。"""
+    class FundFlowProvider(AKShareHotSectorProvider):
+        def _fetch_stock_snapshot_base(self, symbol):  # noqa: ANN001
+            return [{"代码": symbol, "名称": "测试", "收盘": 12.15, "涨跌幅": 0.83, "成交额": 2.7e8}]
+
+        def http_get_json_direct(self, url, *, params=None, headers=None):  # noqa: ANN001
+            assert "fflow/daykline" in url
+            return {
+                "data": {
+                    "klines": [
+                        "2026-06-26,18280903.0,-39765204.0,21484301.0,16591428.0,1689475.0,6.78,-14.75,7.97,6.16,0.63,12.15,0.83,0.00,0.00",
+                    ]
+                }
+            }
+
+    provider = FundFlowProvider(http_config(retry_count=1), cache_config(tmp_path))
+    snapshot = provider.get_stock_snapshot("300121.SZ", "20260627")
+
+    assert snapshot["主力净流入"] == 18280903.0
+    assert snapshot["主力净流入占比"] == pytest.approx(0.0678)
+
+
+def test_stock_snapshot_keeps_existing_realtime_fund_flow(tmp_path):
+    """交易时段快照已带有效主力净流入（f62）时，不应被资金流日线覆盖，也不应触发额外请求。"""
+    class RealtimeFundFlowProvider(AKShareHotSectorProvider):
+        def _fetch_stock_snapshot_base(self, symbol):  # noqa: ANN001
+            return [{"代码": symbol, "名称": "测试", "收盘": 12.0, "涨跌幅": 1.0, "主力净流入": 5000000.0}]
+
+        def http_get_json_direct(self, url, *, params=None, headers=None):  # noqa: ANN001
+            raise AssertionError("已有有效主力净流入时不应再请求资金流日线")
+
+    provider = RealtimeFundFlowProvider(http_config(retry_count=1), cache_config(tmp_path))
+    snapshot = provider.get_stock_snapshot("300121.SZ", "20260627")
+
+    assert snapshot["主力净流入"] == 5000000.0
+
+
 def test_sector_constituents_falls_back_to_eastmoney_direct_for_bk_code(tmp_path):
     class DirectConstituentProvider(AKShareHotSectorProvider):
         def http_get_json_direct(self, url, *, params=None, headers=None):  # noqa: ANN001
