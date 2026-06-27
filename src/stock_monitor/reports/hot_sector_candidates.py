@@ -11,8 +11,12 @@ DISCLAIMER = "本报告仅用于短线候选观察与复盘，不构成投资建
 
 
 def build_candidate_markdown(result: HotSectorCandidateReportResult) -> str:
+    narrow_note = ""
+    if 0 < result.constituent_count <= 5:
+        narrow_note = f" ⚠️ 窄板块（仅 {result.constituent_count} 只成分股），候选可选范围受限"
+
     lines = [
-        f"# {result.sector_name} 短线候选观察股报告",
+        f"# {result.sector_name} 短线候选观察股报告{narrow_note}",
         "",
         f"- 板块名称：{result.sector_name}",
         f"- 策略名称：{result.strategy_name}",
@@ -20,12 +24,31 @@ def build_candidate_markdown(result: HotSectorCandidateReportResult) -> str:
         f"- 生成时间：{result.generated_at.isoformat(timespec='seconds')}",
         f"- 板块热度评分：{_fmt(result.sector_heat_score)}",
         f"- 板块当日涨跌幅：{_pct(result.sector_change_pct)}",
+        f"- 板块成分股数量：{result.constituent_count or '未知'}",
         f"- 数据状态：{result.data_status}",
         f"- 免责声明：{DISCLAIMER}",
         "",
-        "## 候选观察股 Top 10",
-        "",
     ]
+
+    # ── Sector Leaders ──
+    if result.sector_leaders:
+        lines.extend([
+            "## 板块领涨股（板块强势来源）",
+            "",
+            "以下为该板块当日涨幅最大的个股，展示板块上涨的主要驱动力：",
+            "",
+            "| 股票代码 | 股票名称 | 当日涨跌幅 | 状态 | 说明 |",
+            "|---|---:|---|---|",
+        ])
+        for item in result.sector_leaders:
+            status_label = {"candidate": "候选", "observe_only": "仅观察", "excluded": "已排除"}.get(item.get("status", ""), item.get("status", ""))
+            lines.append(
+                f"| {item.get('stock_code', '')} | {item.get('stock_name', '')} | {_pct(item.get('pct_change'))} | {status_label} | {item.get('note', '')} |"
+            )
+        lines.append("")
+
+    lines.append("## 候选观察股 Top 10")
+    lines.append("")
     if result.candidates:
         lines.extend(
             [
@@ -121,6 +144,42 @@ def build_candidate_html(result: HotSectorCandidateReportResult) -> str:
     weights = "".join(f"<li>{escape(str(key))}: {float(value):.2%}</li>" for key, value in result.score_weights.items())
     warnings = "".join(f"<li>{escape(str(warning))}</li>" for warning in result.warnings) or "<li>无。</li>"
 
+    narrow_section = ""
+    if 0 < result.constituent_count <= 5:
+        narrow_section = (
+            f'<section class="narrow-warning">'
+            f"<strong>⚠️ 窄板块提示</strong>：该板块成分股仅 {result.constituent_count} 只，"
+            f"候选可选范围受限，板块表现可能集中在个别股票。"
+            f"</section>"
+        )
+
+    leaders_section = ""
+    if result.sector_leaders:
+        leader_rows = "".join(
+            "<tr>"
+            f"<td>{escape(str(item.get('stock_code', '')))}</td>"
+            f"<td><strong>{escape(str(item.get('stock_name', '')))}</strong></td>"
+            f"<td class=\"{_pos_neg(item.get('pct_change'))}\">{escape(_pct(item.get('pct_change')))}</td>"
+            f"<td>{escape(str({'candidate': '候选', 'observe_only': '仅观察', 'excluded': '已排除'}.get(item.get('status', ''), item.get('status', ''))))}</td>"
+            f"<td>{escape(str(item.get('note', '')))}</td>"
+            "</tr>"
+            for item in result.sector_leaders
+        )
+        leaders_section = (
+            '<section>'
+            '<h2>板块领涨股（板块强势来源）</h2>'
+            '<p class="muted">以下为该板块当日涨幅最大的个股，展示板块上涨的主要驱动力。</p>'
+            '<table>'
+            '<thead><tr><th>股票代码</th><th>股票名称</th><th>当日涨跌幅</th><th>状态</th><th>说明</th></tr></thead>'
+            f'<tbody>{leader_rows}</tbody>'
+            '</table>'
+            '</section>'
+        )
+
+    constituent_span = ""
+    if result.constituent_count:
+        constituent_span = f"<span>成分股数量：{result.constituent_count}</span>"
+
     return f"""<!doctype html>
 <html lang="zh-CN">
 <head>
@@ -134,7 +193,7 @@ def build_candidate_html(result: HotSectorCandidateReportResult) -> str:
     h1{{font-size:24px;margin:0 0 10px}} h2{{font-size:17px;margin:0 0 12px}} small,.muted{{color:#66758a}}
     .meta{{display:flex;flex-wrap:wrap;gap:8px;margin:10px 0}} .meta span{{background:#f1f5fb;border:1px solid #e4e8f0;border-radius:6px;padding:5px 9px}}
     table{{width:100%;border-collapse:collapse}} th{{background:#f7f9fc;color:#5a697c;text-align:left}} th,td{{border-top:1px solid #e4e8f0;padding:9px;vertical-align:top}} .positive{{color:#0f8a5f}} .negative{{color:#c43d4d}} .empty{{text-align:center;color:#66758a;padding:20px}}
-    .notice{{color:#66758a}}
+    .notice{{color:#66758a}} .narrow-warning{{background:#fff7ed;border-color:#fed7aa;color:#9a3412;font-weight:600}}
   </style>
 </head>
 <body>
@@ -146,10 +205,13 @@ def build_candidate_html(result: HotSectorCandidateReportResult) -> str:
       <span>交易日期：{escape(result.trade_date)}</span>
       <span>板块热度：{escape(_fmt(result.sector_heat_score))}</span>
       <span>板块涨跌幅：{escape(_pct(result.sector_change_pct))}</span>
+      {constituent_span}
       <span>数据状态：{escape(result.data_status)}</span>
     </div>
     <p class="notice">{escape(DISCLAIMER)}</p>
   </section>
+  {narrow_section}
+  {leaders_section}
   <section>
     <h2>候选观察股 Top 10</h2>
     <table>
@@ -174,9 +236,10 @@ def build_candidate_html(result: HotSectorCandidateReportResult) -> str:
 
 
 def build_candidate_wecom_summary(result: HotSectorCandidateReportResult) -> str:
+    narrow = f"（窄板块，仅{result.constituent_count}只）" if 0 < result.constituent_count <= 5 else ""
     lines = [
-        f"### {result.sector_name} 短线候选观察",
-        f"> 策略：{result.strategy_name}；日期：{result.trade_date}",
+        f"### {result.sector_name} 短线候选观察{narrow}",
+        f"> 策略：{result.strategy_name}；日期：{result.trade_date}；板块涨跌：{_pct(result.sector_change_pct)}",
         f"> {DISCLAIMER}",
     ]
     for item in result.candidates[:3]:
@@ -186,6 +249,12 @@ def build_candidate_wecom_summary(result: HotSectorCandidateReportResult) -> str
         )
     if not result.candidates:
         lines.append("本次未生成正常候选观察股。")
+
+    # Mention limit-up leaders as next-day watch
+    limit_up_leaders = [l for l in result.sector_leaders if l.get("is_limit_up")]
+    if limit_up_leaders:
+        names = "、".join(l["stock_name"] for l in limit_up_leaders[:3])
+        lines.append(f"> 涨停封板（次日关注）：{names}")
     return "\n".join(lines)
 
 

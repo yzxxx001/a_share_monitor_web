@@ -4,7 +4,7 @@ import json
 import logging
 import math
 import re
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -45,6 +45,8 @@ class HotSectorCandidateReportResult:
     markdown_path: Path
     json_path: Path
     html_path: Path
+    constituent_count: int = 0
+    sector_leaders: list[dict[str, Any]] = field(default_factory=list)
     notification: SendResult | None = None
     notification_skipped_reason: str | None = None
 
@@ -181,6 +183,14 @@ class HotSectorCandidateService:
         for rank, row in enumerate(candidates, start=1):
             row["rank"] = rank
 
+        constituent_count = len(constituents)
+        if 0 < constituent_count <= 5:
+            warnings.append(
+                f"窄板块提示：该板块成分股仅 {constituent_count} 只，候选可选范围受限，板块表现可能集中在个别股票。"
+            )
+
+        sector_leaders = _extract_sector_leaders(metrics, observe_only, excluded, constituent_count, sector_change_pct, warnings)
+
         data_status = "complete"
         if warnings:
             data_status = "degraded"
@@ -213,6 +223,8 @@ class HotSectorCandidateService:
             markdown_path=markdown_path,
             json_path=json_path,
             html_path=html_path,
+            constituent_count=constituent_count,
+            sector_leaders=sector_leaders,
         )
         markdown_path.write_text(build_candidate_markdown(result), encoding="utf-8")
         html_path.write_text(build_candidate_html(result), encoding="utf-8")
@@ -238,6 +250,8 @@ class HotSectorCandidateService:
                 markdown_path=result.markdown_path,
                 json_path=result.json_path,
                 html_path=result.html_path,
+                constituent_count=result.constituent_count,
+                sector_leaders=result.sector_leaders,
                 notification=notification,
             )
             json_path.write_text(json.dumps(candidate_result_to_json(result), ensure_ascii=False, indent=2, default=str), encoding="utf-8")
@@ -408,6 +422,8 @@ def candidate_result_to_json(result: HotSectorCandidateReportResult) -> dict[str
     payload["markdown_path"] = str(result.markdown_path)
     payload["json_path"] = str(result.json_path)
     payload["html_path"] = str(result.html_path)
+    payload["constituent_count"] = result.constituent_count
+    payload["sector_leaders"] = result.sector_leaders
     if result.notification is not None:
         payload["notification"] = asdict(result.notification)
     return payload
@@ -710,6 +726,80 @@ def _observe_row(metric: dict[str, Any], decision: RiskFilterDecision) -> dict[s
         "amount_ratio": metric.get("amount_ratio"),
         "data_status": "完整" if decision.data_complete else "数据不完整",
     }
+
+
+def _extract_sector_leaders(
+    metrics: list[dict[str, Any]],
+    observe_only: list[dict[str, Any]],
+    excluded: list[dict[str, Any]],
+    constituent_count: int,
+    sector_change_pct: float | None,
+    warnings: list[str],
+) -> list[dict[str, Any]]:
+    """Extract top gainers that are driving the sector's overall performance.
+
+    Collects all processed stocks with valid pct_change, sorts by gain descending,
+    and returns the top contributors.  Limit-up stocks in observe_only are
+    highlighted as the sector's primary strength source.
+    """
+    all_stocks: list[dict[str, Any]] = []
+    for m in metrics:
+        if m.get("pct_change") is not None:
+            all_stocks.append({"stock_code": m.get("stock_code", ""), "stock_name": m.get("stock_name", ""),
+                               "pct_change": m.get("pct_change"), "status": "candidate",
+                               "is_limit_up": False, "note": ""})
+    for o in observe_only:
+        pct = o.get("pct_change")
+        if pct is not None:
+            is_limit = "封死涨停" in str(o.get("risk_tags", [])) or "封死涨停" in str(o.get("reasons", []))
+            all_stocks.append({"stock_code": o.get("stock_code", ""), "stock_name": o.get("stock_name", ""),
+                               "pct_change": pct, "status": "observe_only",
+                               "is_limit_up": is_limit, "note": ""})
+    for e in excluded:
+        pct = e.get("pct_change")
+        if pct is not None:
+            all_stocks.append({"stock_code": e.get("stock_code", ""), "stock_name": e.get("stock_name", ""),
+                               "pct_change": pct, "status": "excluded",
+                               "is_limit_up": False, "note": ""})
+
+    if not all_stocks:
+        return []
+
+    all_stocks.sort(key=lambda s: float(s["pct_change"] or 0), reverse=True)
+    leaders = all_stocks[: min(5, len(all_stocks))]
+
+    # Build contextual notes for each leader
+    for item in leaders:
+        pct = float(item["pct_change"] or 0)
+        if item["is_limit_up"]:
+            item["note"] = f"涨停封板 — 板块强势主要来源"
+        elif item["status"] == "observe_only":
+            item["note"] = f"仅观察（非涨停原因）"
+        elif item["status"] == "excluded":
+            item["note"] = f"已排除，但对板块涨幅有贡献"
+        elif sector_change_pct is not None and pct > sector_change_pct * 1.5:
+            item["note"] = f"大幅领跑板块（+{pct:+.2f}% vs 板块{sector_change_pct:+.2f}%）"
+        elif pct >= 5.0:
+            item["note"] = f"板块内强势股"
+        else:
+            item["note"] = ""
+
+    # If sector is narrow and dominated by limit-up stocks, add a summary warning
+    limit_up_leaders = [l for l in leaders if l["is_limit_up"]]
+    if limit_up_leaders and constituent_count <= 5:
+        names = "、".join(l["stock_name"] for l in limit_up_leaders)
+        warnings.append(
+            f"窄板块强势来源：{names} 涨停封板驱动板块大涨，但当日无法买入，"
+            f"仅列入观察。可关注次日开盘后是否有合适买点。"
+        )
+    elif limit_up_leaders:
+        names = "、".join(l["stock_name"] for l in limit_up_leaders)
+        warnings.append(
+            f"板块领涨股 {names} 涨停封板，驱动板块当日强势表现，"
+            f"已列入仅观察。可关注次日是否出现买点。"
+        )
+
+    return leaders
 
 
 def _cumulative_return(close: pd.Series, lookback: int) -> float | None:
