@@ -256,7 +256,9 @@ def test_sector_constituents_falls_back_to_eastmoney_direct_for_bk_code(tmp_path
     assert rows[0]["_provider_status"].source == "eastmoney_direct"
 
 
-def test_industry_rank_prefers_source_with_same_day_cache(tmp_path):
+def test_industry_rank_tries_primary_first_then_prefers_cached_fallback(tmp_path):
+    """主源（eastmoney_direct）始终最先尝试，不会被“有当日缓存的降级源”永久挤掉；
+    仅在主源失败后，带当日缓存的降级源才优先于其它降级源。"""
     class CacheFirstProvider(AKShareHotSectorProvider):
         def __init__(self, *args, **kwargs):  # noqa: ANN002, ANN003
             super().__init__(*args, **kwargs)
@@ -279,6 +281,32 @@ def test_industry_rank_prefers_source_with_same_day_cache(tmp_path):
 
     rows = provider.get_industry_sector_rank("20260527")
 
-    assert provider.calls == ["akshare_ths_summary"]
+    # 主源先试（失败），随后选带当日缓存的 ths_summary，未缓存的 akshare_eastmoney 被跳过
+    assert provider.calls == ["eastmoney_direct", "akshare_ths_summary"]
     assert rows[0].provider_status is not None
     assert rows[0].provider_status.source == "akshare_ths_summary"
+
+
+def test_industry_rank_retries_primary_after_prior_fallback_success(tmp_path):
+    """回归：某次主源失败把降级源记为“上次成功源”后，主源仍必须最先被重试，避免粘滞回退锁死主源。"""
+    class StickyProvider(AKShareHotSectorProvider):
+        def __init__(self, *args, **kwargs):  # noqa: ANN002, ANN003
+            super().__init__(*args, **kwargs)
+            self.calls: list[str] = []
+
+        def _fetch_industry_sector_rank_em_direct(self):
+            self.calls.append("eastmoney_direct")
+            return [{"板块名称": "半导体", "板块代码": "BK1036", "涨跌幅": 3.0, "上涨家数": 70, "下跌家数": 20}]
+
+        def _fetch_industry_sector_rank_ths_summary(self):
+            self.calls.append("akshare_ths_summary")
+            return [{"行业": "半导体", "涨幅": 2.1, "上涨家数": 70, "下跌家数": 20}]
+
+    provider = StickyProvider(http_config(retry_count=1), cache_config(tmp_path))
+    # 模拟历史状态：上次成功源被钉死为降级源
+    provider._save_last_successful_rank_source("industry", "akshare_ths_summary")
+
+    rows = provider.get_industry_sector_rank("20260527")
+
+    assert provider.calls[0] == "eastmoney_direct"
+    assert rows[0].provider_status.source == "eastmoney_direct"

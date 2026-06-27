@@ -424,12 +424,21 @@ class AKShareHotSectorProvider(ResilientProvider, SectorDataProvider, StockDataP
                 "akshare_ths_summary": self._fetch_industry_sector_rank_ths_summary,
             }
             ordered = list(self.industry_rank_sources)
+        # 主源（默认顺序首位，即东方财富直连）始终最先尝试：历史上某次偶发失败会把降级源
+        # 记为“上次成功源”，若允许它排到主源之前，则主源永远轮不到重试、即使早已恢复，
+        # 形成自我维持的粘滞回退。这里把 last_success/缓存偏好限制在“非主源”范围内，仅用于
+        # 主源失败后优先选已知可用的备用源，从而保留快速回退又避免锁死主源。
+        primary = ordered[0]
         preferred: list[str] = []
         last_success = self._last_successful_rank_source(board_type)
-        if last_success and last_success in fetchers:
+        if last_success and last_success in fetchers and last_success != primary:
             preferred.append(last_success)
-        preferred.extend(source for source in ordered if self.cache.exists(f"{board_type}_sector_rank:{source}:{trade_date}"))
-        ordered = list(dict.fromkeys([*preferred, *ordered]))
+        preferred.extend(
+            source
+            for source in ordered
+            if source != primary and self.cache.exists(f"{board_type}_sector_rank:{source}:{trade_date}")
+        )
+        ordered = list(dict.fromkeys([primary, *preferred, *ordered]))
         return [(source, fetchers[source]) for source in ordered if source in fetchers]
 
     def _fetch_sector_constituents(self, sector_code: str) -> Any:

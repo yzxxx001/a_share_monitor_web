@@ -38,7 +38,10 @@ _DEFAULT_DIRECT_HEADERS: dict[str, str] = {
     ),
     "Accept": "application/json, text/plain, */*",
     "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
-    "Accept-Encoding": "gzip, deflate, br",
+    # 仅声明本地确实能解码的压缩方式：未安装 brotli 时若声明 br，东方财富 push2 会返回
+    # Brotli 压缩正文，requests 无法解压导致正文为乱码、.json() 抛 JSONDecodeError，使
+    # eastmoney_direct 直连源每次必败并被静默降级到同花顺。详见 hot_sector 数据源排查。
+    "Accept-Encoding": "gzip, deflate",
     "Connection": "close",
     "Sec-Ch-Ua": '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
     "Sec-Ch-Ua-Mobile": "?0",
@@ -132,7 +135,18 @@ class ResilientProvider:
         session.trust_env = False
         response = session.get(url, params=params, headers=merged_headers, timeout=self.http_config.timeout_seconds)
         response.raise_for_status()
-        return response.json()
+        body = response.text
+        if not body or not body.strip():
+            # 空正文通常是服务端限速的表现；归为可重试的连接问题，触发退避重试，
+            # 而非让后续 .json() 抛非可重试的 JSONDecodeError 导致主源被立即降级。
+            raise requests.ConnectionError(f"直连返回空响应（疑似限速）：{url}")
+        try:
+            return response.json()
+        except ValueError as exc:
+            # 非 JSON 正文（限速页 / 压缩解码失败等）同样按可重试处理；重试耗尽后才降级到下一个源。
+            raise requests.ConnectionError(
+                f"直连返回非 JSON 正文（疑似限速或编码异常）：{self._short_error(exc)}"
+            ) from exc
 
     def call(
         self,
