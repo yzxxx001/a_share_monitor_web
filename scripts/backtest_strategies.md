@@ -1,0 +1,78 @@
+# backtest_strategies.py — 候选策略历史胜率回测对比
+
+对一段历史交易日，**批量回放**短线候选策略并统计 **次日 / 3 日胜率**，用于横向对比不同策略版本
+（默认对比 `short_term_resonance` 与 `short_term_resonance_v1`）。
+
+## 它做什么
+
+- 对每个回测交易日 `D`，把每只股票的行情**截断到 D 当日及之前**（as-of），复用线上真实打分管线
+  （`CommonRiskFilter` 风控门 → `build_stock_metrics` 指标 → `score_short_term_resonance` 打分），
+  按板块逐日选出 Top-N 候选。
+- 用之后 1 / 3 个交易日的收盘价计算前瞻收益（T 收盘买入、T+h 收盘卖出，close-to-close）。
+- 输出每版策略的**胜率 / 均值 / 中位**，外加“板块内随机选股”基线，以及两版差值。
+
+> 为什么不直接循环 `HotSectorCandidateService.generate(历史日期)`：该服务的快照/日线都取“最新”数据，
+> 直接回放会用到未来数据（look-ahead），胜率会失真。本脚本因此自行做 as-of 截断。
+
+## 运行方式
+
+```bash
+# 从仓库根目录运行（脚本会自动把 src/ 加入 import 路径）
+python scripts/backtest_strategies.py [参数...]
+```
+
+## 参数列表
+
+| 参数 | 默认值 | 说明 |
+|---|---|---|
+| `--config` | `config/config.yaml` | 配置文件路径，用于加载策略与数据源设置 |
+| `--sectors` | 无 | 逗号分隔的板块名，如 `硅料硅片,橡胶助剂`。**指定则用之**；缺省时取当前热门行业 Top-N |
+| `--top-sectors` | `5` | 未指定 `--sectors` 时，取当前热门行业排名前 N 个作为回测板块 |
+| `--start` | 数据起点 | 回测开始日 `YYYYMMDD`（缺省=可用行情的最早日） |
+| `--end` | 最新可回测日 | 回测结束日 `YYYYMMDD`（缺省=最新日；会自动留出最大前瞻天数） |
+| `--strategies` | `short_term_resonance,short_term_resonance_v1` | 逗号分隔的策略 id 列表；须已在 `config/strategies/` 注册。恰好两个时额外打印差值 |
+| `--horizons` | `1,3` | 前瞻交易日数（胜率统计的持有期），逗号分隔，可自定义如 `1,3,5` |
+| `--max-candidates` | 策略配置值 | 覆盖每板块每日选股数。**窄板块必须调小**（如 `2`）才能体现选股差异，否则会把全部成分股选上 |
+| `--history-days` | `130` | 打分所需的历史窗口，与策略 `history_days` 对齐 |
+| `--fetch-days` | `320` | 每只股票拉取的日线根数；回测区间越久需调大（须覆盖 `start` 之前 `history_days` 根 + 之后前瞻根） |
+| `--verbose` | 关 | 打印逐日逐票明细（日期 / 板块 / 策略 / 代码 / 得分 / 次日收益） |
+
+## 用法示例
+
+```bash
+# 两个窄板块，强制每板块每日只选 2 只，区间 5/1~6/20
+python scripts/backtest_strategies.py --sectors 硅料硅片,橡胶助剂 --start 20260501 --end 20260620 --max-candidates 2
+
+# 当前热门行业 Top-6，区间 3/1~6/20（样本更大、更有统计意义；但拉取股票多、较慢）
+python scripts/backtest_strategies.py --top-sectors 6 --start 20260301 --end 20260620
+
+# 自定义持有期 T+1/T+3/T+5，并打印明细
+python scripts/backtest_strategies.py --sectors 半导体 --horizons 1,3,5 --max-candidates 5 --verbose
+```
+
+## 输出怎么读
+
+```
+基线（全体合格成分股，等价于该板块内随机选股的期望）
+  T+1: n= 241  胜率= 49.0%  均值=-0.01%  中位=-0.14%
+策略 short_term_resonance  （累计选出 164 次候选）
+  T+1: n= 164  胜率= 50.0%  均值=-0.02%  中位=+0.02%
+...
+差异 [A] − [B]：
+  T+3: 胜率 +X pct，均值 +Y pct
+```
+
+- **基线**：当日板块内所有“合格”股票（过了风控门、非涨停封板）的前瞻收益，代表“随机选股”的期望。
+  策略只有**跑赢基线**才说明选股有 alpha。
+- **n**：样本数（被选中并能算出前瞻收益的次数）。
+- **胜率**：前瞻收益 > 0 的占比。**均值 / 中位**：前瞻收益的平均与中位数（百分比）。
+- **差异**：仅当 `--strategies` 恰为两个时打印，正值表示第一个策略更优。
+
+## 局限（结论解读须知）
+
+- **幸存者偏差**：成分股取“当前”板块名单，不还原历史调入调出。
+- **不含资金流维度**：默认按 `degraded` 权重（两版完全一致），以**隔离“累计涨幅惩罚”的影响**——
+  两版输入相同，差异仅来自策略配置，对比是公平的。
+- **理想成交假设**：close-to-close，不计手续费、滑点、涨跌停无法成交等。
+- **窄板块无区分度**：合格股 ≤ `max_candidates` 时两版会选上全部股票，结果等于基线。务必用
+  `--max-candidates` 调小，或换成分股较多 / 更多板块以扩大样本。
