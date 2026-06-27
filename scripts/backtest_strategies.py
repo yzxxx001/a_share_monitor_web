@@ -25,6 +25,7 @@ score_short_term_resonance）：对每个回测交易日，把每只股票的行
 from __future__ import annotations
 
 import argparse
+import random
 import statistics
 import sys
 from collections import defaultdict
@@ -127,6 +128,60 @@ def _resolve_sectors(provider: AKShareHotSectorProvider, settings: Any, sectors_
     return out
 
 
+def _bootstrap_mean_diff(
+    a_rows: list[tuple[date, float]],
+    b_rows: list[tuple[date, float]],
+    n_boot: int,
+    seed: int,
+) -> tuple[float, float, float, float] | None:
+    """按交易日 block bootstrap 估计 (mean(a) − mean(b)) 的 95% CI 与双侧 p 值。
+
+    每次重抽样以“交易日”为单元（连同当日全部收益一起抽），保留同日内的相关性，
+    a、b 用同一批重抽样的交易日（配对），从而衡量两策略在相同日子上的差异。
+    返回 (观测差, ci_low, ci_high, p)；样本天数不足时返回 None。
+    """
+    a_by_date: dict[date, list[float]] = defaultdict(list)
+    b_by_date: dict[date, list[float]] = defaultdict(list)
+    for dt, v in a_rows:
+        a_by_date[dt].append(v)
+    for dt, v in b_rows:
+        b_by_date[dt].append(v)
+    dates = sorted(set(a_by_date) | set(b_by_date))
+    if len(dates) < 3:
+        return None
+
+    def _pooled(by_date: dict[date, list[float]], sample: list[date]) -> float | None:
+        vals = [v for dt in sample for v in by_date.get(dt, ())]
+        return statistics.fmean(vals) if vals else None
+
+    obs_a = _pooled(a_by_date, dates)
+    obs_b = _pooled(b_by_date, dates)
+    if obs_a is None or obs_b is None:
+        return None
+    observed = obs_a - obs_b
+
+    rng = random.Random(seed)
+    n = len(dates)
+    diffs: list[float] = []
+    for _ in range(n_boot):
+        sample = [dates[rng.randrange(n)] for _ in range(n)]
+        ma = _pooled(a_by_date, sample)
+        mb = _pooled(b_by_date, sample)
+        if ma is not None and mb is not None:
+            diffs.append(ma - mb)
+    if len(diffs) < 2:
+        return None
+    diffs.sort()
+    lo = diffs[int(0.025 * len(diffs))]
+    hi = diffs[min(len(diffs) - 1, int(0.975 * len(diffs)))]
+    # 双侧 p：bootstrap 分布落在 0 另一侧的比例 ×2
+    p = 2.0 * min(
+        sum(1 for x in diffs if x <= 0),
+        sum(1 for x in diffs if x >= 0),
+    ) / len(diffs)
+    return observed, lo, hi, min(p, 1.0)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="两版短线候选策略的历史胜率回测对比")
     parser.add_argument("--config", default="config/config.yaml")
@@ -139,6 +194,8 @@ def main() -> int:
     parser.add_argument("--max-candidates", type=int, default=None, help="覆盖每板块每日选股数；窄板块需调小才能体现选股差异")
     parser.add_argument("--history-days", type=int, default=130, help="打分所需的历史窗口（与策略 history_days 对齐）")
     parser.add_argument("--fetch-days", type=int, default=320, help="每只股票拉取的日线根数")
+    parser.add_argument("--bootstrap", type=int, default=2000, help="按交易日 block bootstrap 的重抽样次数；0=关闭显著性检验")
+    parser.add_argument("--seed", type=int, default=42, help="bootstrap 随机种子，保证结果可复现")
     parser.add_argument("--verbose", action="store_true", help="打印逐日逐票明细")
     args = parser.parse_args()
 
@@ -198,9 +255,9 @@ def main() -> int:
     backtest_dates = [d for d in trading_dates if start <= d <= end]
     print(f"回测区间：{start} ~ {end}，交易日 {len(backtest_dates)} 天\n")
 
-    # 统计容器：results[strategy][horizon] = [前瞻收益...]；baseline[horizon] = [全样本前瞻收益...]
-    results: dict[str, dict[int, list[float]]] = {s: {h: [] for h in horizons} for s in strategies}
-    baseline: dict[int, list[float]] = {h: [] for h in horizons}
+    # 统计容器：保存 (交易日, 前瞻收益) 以便按日做 block bootstrap 显著性检验。
+    results: dict[str, dict[int, list[tuple[date, float]]]] = {s: {h: [] for h in horizons} for s in strategies}
+    baseline: dict[int, list[tuple[date, float]]] = {h: [] for h in horizons}
     pick_counts: dict[str, int] = defaultdict(int)
     seen_baseline: set[tuple[str, date]] = set()
 
@@ -266,7 +323,7 @@ def main() -> int:
                 for h in horizons:
                     fr = metric["_hist"].forward_return(metric["_idx"], h)
                     if fr is not None:
-                        baseline[h].append(fr)
+                        baseline[h].append((d, fr))
 
             # 3) 两版策略各自打分、取 Top-N、记录前瞻收益
             for strat in strategies:
@@ -284,17 +341,20 @@ def main() -> int:
                     for h in horizons:
                         fr = src["_hist"].forward_return(src["_idx"], h)
                         if fr is not None:
-                            results[strat][h].append(fr)
+                            results[strat][h].append((d, fr))
                     if args.verbose:
                         print(f"  {d} {sector_name:>6} [{strat:>26}] {row['stock_code']} {src['stock_name']} "
                               f"score={row['short_term_score']} fwd1={src['_hist'].forward_return(src['_idx'],1)}")
 
     # ===== 汇总输出 =====
-    def _summ(vals: list[float]) -> str:
+    def _summ(rows: list[tuple[date, float]]) -> str:
+        vals = [v for _, v in rows]
         if not vals:
             return "n=0"
         win = sum(1 for v in vals if v > 0) / len(vals) * 100
-        return f"n={len(vals):4d}  胜率={win:5.1f}%  均值={statistics.fmean(vals):+5.2f}%  中位={statistics.median(vals):+5.2f}%"
+        ndays = len({dt for dt, _ in rows})
+        return (f"n={len(vals):4d}（{ndays}天）  胜率={win:5.1f}%  "
+                f"均值={statistics.fmean(vals):+5.2f}%  中位={statistics.median(vals):+5.2f}%")
 
     print("\n" + "=" * 78)
     print("基线（全体合格成分股，等价于该板块内随机选股的期望）")
@@ -307,16 +367,29 @@ def main() -> int:
             print(f"  T+{h}: {_summ(results[strat][h])}")
         print("-" * 78)
 
-    # 两版差异（若恰为两版）
-    if len(strategies) == 2:
-        a, b = strategies
-        print(f"差异 [{a}] − [{b}]：")
-        for h in horizons:
-            va, vb = results[a][h], results[b][h]
-            if va and vb:
-                wa = sum(1 for v in va if v > 0) / len(va) * 100
-                wb = sum(1 for v in vb if v > 0) / len(vb) * 100
-                print(f"  T+{h}: 胜率 {wa - wb:+.1f}pct，均值 {statistics.fmean(va) - statistics.fmean(vb):+.2f}pct")
+    # ===== 显著性检验：按交易日 block bootstrap =====
+    # 候选样本高度自相关（同股多日重复、前瞻窗口重叠），把“交易日”作为独立重抽样单元，
+    # 比把每次候选当独立样本更诚实地反映有效样本量。报告均值差的 95% 置信区间与双侧 p 值。
+    if args.bootstrap > 0:
+        print(f"按交易日 block bootstrap（{args.bootstrap} 次，seed={args.seed}）：均值差 [95% 置信区间] p值")
+        print("（CI 不含 0 / p<0.05 才算显著；样本天数少时几乎必然不显著）")
+        for strat in strategies:
+            for h in horizons:
+                res = _bootstrap_mean_diff(results[strat][h], baseline[h], args.bootstrap, args.seed)
+                if res:
+                    diff, lo, hi, p = res
+                    sig = "  ✓显著" if (lo > 0 or hi < 0) else ""
+                    print(f"  {strat} − 基线  T+{h}: {diff:+.2f}pct  [{lo:+.2f}, {hi:+.2f}]  p={p:.3f}{sig}")
+        if len(strategies) == 2:
+            a, b = strategies
+            print(f"  —— 两版对比 [{a}] − [{b}] ——")
+            for h in horizons:
+                res = _bootstrap_mean_diff(results[a][h], results[b][h], args.bootstrap, args.seed)
+                if res:
+                    diff, lo, hi, p = res
+                    sig = "  ✓显著" if (lo > 0 or hi < 0) else "  （无显著差异）"
+                    print(f"  T+{h}: {diff:+.2f}pct  [{lo:+.2f}, {hi:+.2f}]  p={p:.3f}{sig}")
+        print("-" * 78)
     return 0
 
 
